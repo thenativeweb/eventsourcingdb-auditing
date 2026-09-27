@@ -34,6 +34,10 @@ const (
 	CheckPublicAnchors   = "public-anchors"
 	CheckSilence         = "silence"
 	CheckAnchoring       = "anchoring"
+	CheckEventHashes     = "event-hashes"
+	CheckEventChain      = "event-chain"
+	CheckFingerprints    = "fingerprints"
+	CheckProtection      = "protection"
 )
 
 // Finding is one problem, or one thing worth knowing, that a check has found.
