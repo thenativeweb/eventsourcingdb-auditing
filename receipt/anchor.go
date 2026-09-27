@@ -79,6 +79,30 @@ func VerifyAnchor(jws string, certificate KeyCertificate) (Anchor, error) {
 	return anchor, nil
 }
 
+// ParseAnchorUnverified returns what an anchor states, without checking its
+// signature. It is meant for a verification tool, which reports an anchor that
+// does not verify, and then still checks the ones after it. Anyone else must
+// use VerifyAnchor.
+func ParseAnchorUnverified(jws string) (Anchor, error) {
+	_, err := readHeader(jws, anchorType)
+	if err != nil {
+		return Anchor{}, err
+	}
+
+	_, payload, _, err := splitCompact(jws)
+	if err != nil {
+		return Anchor{}, err
+	}
+
+	var parsed Anchor
+	err = strictUnmarshal(payload, &parsed)
+	if err != nil {
+		return Anchor{}, fmt.Errorf("%w: the anchor is malformed: %v", ErrInvalid, err)
+	}
+
+	return parsed, nil
+}
+
 // Digest returns the SHA-256 digest of a JWS, which is what a time stamping
 // authority stamps for an anchor.
 func Digest(jws string) [sha256.Size]byte {

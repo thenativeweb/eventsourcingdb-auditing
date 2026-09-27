@@ -121,8 +121,9 @@ func Verify(jws string, certificate KeyCertificate) (Receipt, error) {
 
 // ParseUnverified returns what a receipt states, without checking its
 // signature. It is meant for the custodian, which reads the receipts it has
-// issued itself, possibly with a key it no longer holds. Anyone else must use
-// Verify.
+// issued itself, possibly with a key it no longer holds, and for a verification
+// tool, which reports a receipt that does not verify, and then still checks
+// the ones after it. Anyone else must use Verify.
 func ParseUnverified(jws string) (Receipt, error) {
 	_, err := readHeader(jws, receiptType)
 	if err != nil {
