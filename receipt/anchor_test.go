@@ -63,6 +63,23 @@ func TestAnchor(t *testing.T) {
 		assert.ErrorIs(t, err, receipt.ErrInvalid)
 	})
 
+	t.Run("parses an anchor without checking its signature", func(t *testing.T) {
+		_, signingKey := newSigningKey(t)
+		anchor := receipt.Anchor{Hour: hour, Root: "root", LeafCount: 3}
+
+		jws, err := signingKey.SignAnchor(anchor, receivedAt)
+		require.NoError(t, err)
+
+		parsed, err := receipt.ParseAnchorUnverified(jws)
+		require.NoError(t, err)
+		assert.Equal(t, anchor, parsed)
+
+		receiptJWS, err := signingKey.Sign(newReceipt())
+		require.NoError(t, err)
+		_, err = receipt.ParseAnchorUnverified(receiptJWS)
+		assert.ErrorIs(t, err, receipt.ErrInvalid, "a receipt is no anchor")
+	})
+
 	t.Run("digests a JWS the same way it hashes it", func(t *testing.T) {
 		digest := receipt.Digest("a jws")
 
