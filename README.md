@@ -23,13 +23,14 @@ It contains the following packages:
 - `timestamping` obtains time stamps from a time stamping authority according to RFC 3161, and checks that a time stamp covers the expected digest and is signed by the authority it names.
 - `audit` describes what the custodian hands out to auditors, and provides a client to read it: the audited instance with its intervals and key certificates, its chain of fingerprints, receipts, conflicts, breaks, and resets, and the anchors with its proofs. An auditor reads with an auditor token, which the customer grants, which only reads, and which expires. The chain of anchors is public.
 
-- `verify` checks what the custodian has recorded about an instance: that its keys are certified by the root key, that its receipts form one chain that matches its entries, that its anchors are signed, stamped, chained, and prove the receipts of the instance without leaving any out, that they match the public chain of anchors, and that the client was never silent for longer than its heartbeat interval. Every problem becomes a finding, either a manipulation, a gap in protection, or a notice, so that a report can list them all.
+- `database` reads the events of the EventSourcingDB of a customer, either from a backup, as EventSourcingDB writes it on `/api/v1/backup`, or from the running database, and checks for every event whether its content still hashes to its hash. From a backup, the time and the data are hashed exactly as they were written, so that escapes in the data do not get lost.
+- `verify` checks what the custodian has recorded about an instance: that its keys are certified by the root key, that its receipts form one chain that matches its entries, that its anchors are signed, stamped, chained, and prove the receipts of the instance without leaving any out, that they match the public chain of anchors, and that the client was never silent for longer than its heartbeat interval. It then checks the events of the instance against it: that every event still hashes to its hash, that the events form one chain, that they match every fingerprint the custodian has confirmed since the latest reset of the baseline, and how long every event stayed without the protection of a fingerprint. Every problem becomes a finding, either a manipulation, a gap in protection, or a notice, so that a report can list them all.
 
 The packages `receipt/receipttest` and `timestamping/timestampingtest` provide keys and a time stamping authority for tests.
 
 ## Running quality assurance
 
-To run quality assurance for this module use the following command:
+To run quality assurance for this module use the following command. Some tests start an EventSourcingDB in Docker:
 
 ```shell
 $ make

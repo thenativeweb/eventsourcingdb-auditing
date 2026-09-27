@@ -48,6 +48,14 @@ type ConfirmedFingerprint struct {
 type CustodianResult struct {
 	Fingerprints []ConfirmedFingerprint
 	Findings     []Finding
+
+	// Intervals are the intervals of the instance, which the events are
+	// checked against as well.
+	Intervals []audit.Intervals
+
+	// LatestResetAt is when the baseline was reset for the last time, or nil
+	// if it never was.
+	LatestResetAt *time.Time
 }
 
 // ErrNoCertifiedKey means that none of the key certificates verifies against
@@ -81,13 +89,18 @@ func VerifyCustodian(custodian Custodian, rootPublicKey ed25519.PublicKey, now t
 		return CustodianResult{}, ErrNoCertifiedKey
 	}
 
-	fingerprints := verifyChain(custodian, certificates, &found)
+	fingerprints, latestResetAt := verifyChain(custodian, certificates, &found)
 	verifyAnchors(custodian.Anchors, certificates, fingerprints, &found)
 	verifyPublicAnchors(custodian.Anchors, custodian.PublicAnchors, &found)
 	verifySilence(custodian, &found, now)
 	verifyAnchoring(fingerprints, &found, now)
 
-	return CustodianResult{Fingerprints: fingerprints, Findings: found}, nil
+	return CustodianResult{
+		Fingerprints:  fingerprints,
+		Findings:      found,
+		Intervals:     custodian.Instance.Intervals,
+		LatestResetAt: latestResetAt,
+	}, nil
 }
 
 func verifyKeyCertificates(certificateJWSs []string, rootPublicKey ed25519.PublicKey, found *findings) map[string]receipt.KeyCertificate {
@@ -122,10 +135,12 @@ func verifyReceiptJWS(receiptJWS string, certificates map[string]receipt.KeyCert
 }
 
 // verifyChain checks the entries of the chain in the order they were
-// recorded, and returns the confirmed fingerprints.
-func verifyChain(custodian Custodian, certificates map[string]receipt.KeyCertificate, found *findings) []ConfirmedFingerprint {
+// recorded, and returns the confirmed fingerprints, and when the baseline was
+// reset for the last time.
+func verifyChain(custodian Custodian, certificates map[string]receipt.KeyCertificate, found *findings) ([]ConfirmedFingerprint, *time.Time) {
 	var fingerprints []ConfirmedFingerprint
 	latestReset := -1
+	var latestResetAt *time.Time
 
 	var previousJWS string
 	var previous receipt.Receipt
@@ -203,6 +218,8 @@ func verifyChain(custodian Custodian, certificates map[string]receipt.KeyCertifi
 
 			found.add(SeverityNotice, CheckLocks, "On %s, the baseline was reset, so that the chain of events started over, with the reason: %s", formatTime(entry.RecordedAt), reason)
 			latestReset = len(fingerprints)
+			resetAt := entry.RecordedAt
+			latestResetAt = &resetAt
 
 		default:
 			found.add(SeverityManipulation, CheckReceipts, "Entry %s of the chain has the unknown type %q", entry.ID, entry.Type)
@@ -213,7 +230,7 @@ func verifyChain(custodian Custodian, certificates map[string]receipt.KeyCertifi
 		fingerprints[i].IsAfterLatestReset = i >= latestReset
 	}
 
-	return fingerprints
+	return fingerprints, latestResetAt
 }
 
 func verifyAnchors(anchors []audit.AnchorWithProof, certificates map[string]receipt.KeyCertificate, fingerprints []ConfirmedFingerprint, found *findings) {
@@ -420,15 +437,27 @@ func reportSilence(intervals []audit.Intervals, from, until time.Time, found *fi
 // heartbeatIntervalAt returns the heartbeat interval that applied at a point
 // in time.
 func heartbeatIntervalAt(intervals []audit.Intervals, at time.Time) time.Duration {
-	var heartbeat time.Duration
-	for _, interval := range intervals {
-		if interval.ValidFrom.After(at) {
+	return time.Duration(intervalsAt(intervals, at).HeartbeatIntervalInMilliseconds) * time.Millisecond
+}
+
+// minimumIntervalAt returns the minimum interval that applied at a point in
+// time.
+func minimumIntervalAt(intervals []audit.Intervals, at time.Time) time.Duration {
+	return time.Duration(intervalsAt(intervals, at).MinimumIntervalInMilliseconds) * time.Millisecond
+}
+
+// intervalsAt returns the intervals that applied at a point in time. Before
+// the first change, the first intervals apply.
+func intervalsAt(intervals []audit.Intervals, at time.Time) audit.Intervals {
+	var current audit.Intervals
+	for i, interval := range intervals {
+		if i > 0 && interval.ValidFrom.After(at) {
 			break
 		}
-		heartbeat = time.Duration(interval.HeartbeatIntervalInMilliseconds) * time.Millisecond
+		current = interval
 	}
 
-	return heartbeat
+	return current
 }
 
 // verifyAnchoring finds receipts that have stayed without an anchor for
