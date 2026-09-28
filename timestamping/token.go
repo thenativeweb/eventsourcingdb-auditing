@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/digitorus/pkcs7"
 	"github.com/digitorus/timestamp"
 )
 
@@ -23,6 +25,11 @@ type Token struct {
 	// IsQualified reports whether the time stamp claims to be qualified.
 	// Only the certificate of the authority can confirm that.
 	IsQualified bool
+
+	// Certificate is the certificate the time stamp was signed with, that
+	// is, the one of the time stamping unit of the authority. Whether it
+	// belongs to a qualified trust service is up to the EU trusted lists.
+	Certificate *x509.Certificate
 }
 
 // ErrInvalid means that a time stamp does not cover the expected digest, or
@@ -53,9 +60,19 @@ func check(parsed *timestamp.Timestamp, digest [sha256.Size]byte) (Token, error)
 		return Token{}, fmt.Errorf("%w: the time stamp covers another digest", ErrInvalid)
 	}
 
+	signed, err := pkcs7.Parse(parsed.RawToken)
+	if err != nil {
+		return Token{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	certificate := signed.GetOnlySigner()
+	if certificate == nil {
+		return Token{}, fmt.Errorf("%w: the time stamp does not carry the certificate it was signed with", ErrInvalid)
+	}
+
 	return Token{
 		Raw:         parsed.RawToken,
 		Time:        parsed.Time,
 		IsQualified: parsed.Qualified,
+		Certificate: certificate,
 	}, nil
 }
