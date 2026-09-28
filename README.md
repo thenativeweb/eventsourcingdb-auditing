@@ -82,7 +82,7 @@ To run quality assurance for this module use the following command. Some tests s
 $ make
 ```
 
-The tests use a time stamping authority of their own. To check the `timestamping` package against a real one, pass its URL, and its credentials if it requires them. Every run uses up one time stamp:
+The tests use a time stamping authority of their own, and an answer of DGN, the qualified time stamping authority of the custodian, which `timestamping/testdata` holds together with its request. To check the `timestamping` package against a real authority, pass its URL, and its credentials if it requires them. Every run uses up one time stamp:
 
 ```shell
 $ TIMESTAMP_AUTHORITY_URL=<rfc-3161-url> \
@@ -90,6 +90,8 @@ $ TIMESTAMP_AUTHORITY_URL=<rfc-3161-url> \
   TIMESTAMP_AUTHORITY_PASSWORD=<password> \
   go test -run TestInterop -v ./timestamping/
 ```
+
+Add `EU_TRUSTED_LISTS=1` to also check the time stamp against the EU trusted lists as they are published now, and `TIMESTAMP_RECORDING=testdata/<name>` to keep the request and the answer, before anything is checked.
 
 The tests of `trustedlists` use real trusted lists, which `trustedlists/trustedliststest` provides: the list of the lists, and the lists of Germany, Hungary, Slovenia, and Iceland, which cover every signature method the lists use. To check against the lists as they are published now, including whether the certificates announced in the Official Journal still sign the list of the lists, run:
 

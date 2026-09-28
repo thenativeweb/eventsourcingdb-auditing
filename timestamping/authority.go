@@ -6,10 +6,13 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/asn1"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/digitorus/timestamp"
@@ -92,16 +95,60 @@ func (a Authority) Stamp(ctx context.Context, digest [sha256.Size]byte) (Token, 
 		return Token{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 
-	parsed, err := timestamp.ParseResponse(responseBody)
+	rawToken, err := tokenOf(responseBody)
 	if err != nil {
 		return Token{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 
+	token, info, err := verify(rawToken, digest)
+	if err != nil {
+		return Token{}, err
+	}
+
 	// The nonce makes sure that the answer belongs to this request, and is
 	// not an older time stamp played back.
-	if parsed.Nonce == nil || parsed.Nonce.Cmp(nonce) != 0 {
+	if info.Nonce == nil || info.Nonce.Cmp(nonce) != 0 {
 		return Token{}, fmt.Errorf("%w: the time stamp does not answer this request", ErrInvalid)
 	}
 
-	return check(parsed, digest)
+	return token, nil
+}
+
+type timeStampResponse struct {
+	Status         pkiStatusInfo
+	TimeStampToken asn1.RawValue `asn1:"optional"`
+}
+
+type pkiStatusInfo struct {
+	Status       int
+	StatusString []string       `asn1:"optional,utf8"`
+	FailInfo     asn1.BitString `asn1:"optional"`
+}
+
+// The statuses of RFC 3161 with which an authority hands out a time stamp.
+const (
+	statusGranted         = 0
+	statusGrantedWithMods = 1
+)
+
+// tokenOf returns the time stamp token of an answer, if the authority has
+// granted the request.
+func tokenOf(responseBody []byte) ([]byte, error) {
+	var response timeStampResponse
+	rest, err := asn1.Unmarshal(responseBody, &response)
+	if err != nil {
+		return nil, err
+	}
+	if len(rest) > 0 {
+		return nil, errors.New("the answer of the time stamping authority is followed by other data")
+	}
+
+	if response.Status.Status != statusGranted && response.Status.Status != statusGrantedWithMods {
+		return nil, fmt.Errorf("the time stamping authority rejected the request with status %d: %s", response.Status.Status, strings.Join(response.Status.StatusString, ", "))
+	}
+	if len(response.TimeStampToken.FullBytes) == 0 {
+		return nil, errors.New("the answer of the time stamping authority carries no time stamp")
+	}
+
+	return response.TimeStampToken.FullBytes, nil
 }

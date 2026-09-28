@@ -2,15 +2,14 @@ package timestamping
 
 import (
 	"bytes"
-	"crypto"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
-
-	"github.com/digitorus/pkcs7"
-	"github.com/digitorus/timestamp"
 )
 
 // Token is a time stamp, as the time stamping authority has signed it.
@@ -36,43 +35,102 @@ type Token struct {
 // that its signature does not match. Check for it with errors.Is.
 var ErrInvalid = errors.New("invalid time stamp")
 
+var (
+	oidQCStatements          = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 3}
+	oidQualifiedTimeStamping = asn1.ObjectIdentifier{0, 4, 0, 19422, 1, 1}
+)
+
+type tstInfo struct {
+	Version        int
+	Policy         asn1.ObjectIdentifier
+	MessageImprint messageImprint
+	SerialNumber   *big.Int
+	Time           time.Time        `asn1:"generalized"`
+	Accuracy       accuracy         `asn1:"optional"`
+	Ordering       bool             `asn1:"optional,default:false"`
+	Nonce          *big.Int         `asn1:"optional"`
+	TSA            asn1.RawValue    `asn1:"optional,tag:0"`
+	Extensions     []pkix.Extension `asn1:"optional,tag:1"`
+}
+
+type messageImprint struct {
+	HashAlgorithm pkix.AlgorithmIdentifier
+	HashedMessage []byte
+}
+
+type accuracy struct {
+	Seconds      int `asn1:"optional"`
+	Milliseconds int `asn1:"optional,tag:0"`
+	Microseconds int `asn1:"optional,tag:1"`
+}
+
+type qcStatement struct {
+	StatementID   asn1.ObjectIdentifier
+	StatementInfo asn1.RawValue `asn1:"optional"`
+}
+
 // Verify checks that a time stamp token covers the given digest, and that its
 // signature matches the certificate it carries.
 func Verify(raw []byte, digest [sha256.Size]byte) (Token, error) {
-	parsed, err := timestamp.Parse(raw)
-	if err != nil {
-		return Token{}, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
+	token, _, err := verify(raw, digest)
 
-	return check(parsed, digest)
+	return token, err
 }
 
-func check(parsed *timestamp.Timestamp, digest [sha256.Size]byte) (Token, error) {
-	// Without the certificate of the authority, the library does not check
-	// the signature at all, so such a time stamp proves nothing here.
-	if len(parsed.Certificates) == 0 {
-		return Token{}, fmt.Errorf("%w: the time stamp carries no certificate to check its signature with", ErrInvalid)
-	}
-	if parsed.HashAlgorithm != crypto.SHA256 {
-		return Token{}, fmt.Errorf("%w: expected SHA-256, got %v", ErrInvalid, parsed.HashAlgorithm)
-	}
-	if !bytes.Equal(parsed.HashedMessage, digest[:]) {
-		return Token{}, fmt.Errorf("%w: the time stamp covers another digest", ErrInvalid)
+// verify is Verify, but also returns the TSTInfo, whose nonce Stamp checks.
+func verify(raw []byte, digest [sha256.Size]byte) (Token, tstInfo, error) {
+	content, certificate, err := verifySignedData(raw)
+	if err != nil {
+		return Token{}, tstInfo{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 
-	signed, err := pkcs7.Parse(parsed.RawToken)
+	var info tstInfo
+	rest, err := asn1.Unmarshal(content, &info)
 	if err != nil {
-		return Token{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return Token{}, tstInfo{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	certificate := signed.GetOnlySigner()
-	if certificate == nil {
-		return Token{}, fmt.Errorf("%w: the time stamp does not carry the certificate it was signed with", ErrInvalid)
+	if len(rest) > 0 {
+		return Token{}, tstInfo{}, fmt.Errorf("%w: the TSTInfo is followed by other data", ErrInvalid)
+	}
+
+	if !info.MessageImprint.HashAlgorithm.Algorithm.Equal(oidSHA256) {
+		return Token{}, tstInfo{}, fmt.Errorf("%w: expected SHA-256, got %v", ErrInvalid, info.MessageImprint.HashAlgorithm.Algorithm)
+	}
+	if !bytes.Equal(info.MessageImprint.HashedMessage, digest[:]) {
+		return Token{}, tstInfo{}, fmt.Errorf("%w: the time stamp covers another digest", ErrInvalid)
+	}
+	if info.Time.Before(certificate.NotBefore) || info.Time.After(certificate.NotAfter) {
+		return Token{}, tstInfo{}, fmt.Errorf("%w: the time stamp was issued at %s, outside the validity of its certificate", ErrInvalid, info.Time.Format(time.RFC3339))
 	}
 
 	return Token{
-		Raw:         parsed.RawToken,
-		Time:        parsed.Time,
-		IsQualified: parsed.Qualified,
+		Raw:         raw,
+		Time:        info.Time,
+		IsQualified: claimsQualified(info.Extensions),
 		Certificate: certificate,
-	}, nil
+	}, info, nil
+}
+
+// claimsQualified reports whether a time stamp carries the statement of ETSI
+// EN 319 422 that it is a qualified electronic time stamp.
+func claimsQualified(extensions []pkix.Extension) bool {
+	for _, extension := range extensions {
+		if !extension.Id.Equal(oidQCStatements) {
+			continue
+		}
+
+		var statements []qcStatement
+		_, err := asn1.Unmarshal(extension.Value, &statements)
+		if err != nil {
+			return false
+		}
+
+		for _, statement := range statements {
+			if statement.StatementID.Equal(oidQualifiedTimeStamping) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
