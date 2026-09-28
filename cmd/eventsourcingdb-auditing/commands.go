@@ -16,6 +16,9 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
 )
 
+// defaultServerURL is where the custodian of the native web is reached.
+const defaultServerURL = "https://auditing.eventsourcingdb.io"
+
 // newTrustedListsSource returns where the EU trusted lists are fetched from.
 // Tests replace it, so that they need no network.
 var newTrustedListsSource = func() trustedlists.Source {
@@ -157,8 +160,13 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 		},
 	}
 
+	serverURLDefault := os.Getenv("SERVER_URL")
+	if serverURLDefault == "" {
+		serverURLDefault = defaultServerURL
+	}
+
 	flags := command.Flags()
-	flags.StringVar(&serverURL, "server-url", os.Getenv("SERVER_URL"), "sets the URL of the custodian")
+	flags.StringVar(&serverURL, "server-url", serverURLDefault, "sets the URL of the custodian")
 	flags.StringVar(&auditorToken, "auditor-token", os.Getenv("AUDITOR_TOKEN"), "sets the auditor token the customer has granted")
 	flags.StringVar(&rootPublicKey, "root-public-key", os.Getenv("ROOT_PUBLIC_KEY"), "sets the root public key of the custodian, in base64url")
 	flags.StringVar(&backupPath, "backup", "", "sets the path of a backup of the database, as written on /api/v1/backup")
