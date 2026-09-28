@@ -40,6 +40,7 @@ const (
 	CheckProtection      = "protection"
 	CheckKeptReceipts    = "kept-receipts"
 	CheckKeptAnchors     = "kept-anchors"
+	CheckQualification   = "qualification"
 )
 
 // Finding is one problem, or one thing worth knowing, that a check has found.

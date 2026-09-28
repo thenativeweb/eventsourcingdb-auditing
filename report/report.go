@@ -48,8 +48,9 @@ type Report struct {
 	ReceiptsDirectoryChecked bool `json:"receiptsDirectoryChecked"`
 
 	// TrustedListsChecked reports whether the time stamps were checked
-	// against the EU trusted lists.
-	TrustedListsChecked bool `json:"trustedListsChecked"`
+	// against the EU trusted lists, and TrustedLists what that found.
+	TrustedListsChecked bool          `json:"trustedListsChecked"`
+	TrustedLists        *TrustedLists `json:"trustedLists,omitempty"`
 
 	Result   Result           `json:"result"`
 	Findings []verify.Finding `json:"findings"`
@@ -80,6 +81,17 @@ type Events struct {
 	Count   int        `json:"count"`
 	FirstAt *time.Time `json:"firstAt,omitempty"`
 	LastAt  *time.Time `json:"lastAt,omitempty"`
+}
+
+// TrustedLists describes the check of the time stamps against the EU trusted
+// lists.
+type TrustedLists struct {
+	// ListOfTheListsIssuedAt names the state of the trusted lists the check
+	// relied on.
+	ListOfTheListsIssuedAt time.Time `json:"listOfTheListsIssuedAt"`
+
+	StampedAnchors   int `json:"stampedAnchors"`
+	QualifiedAnchors int `json:"qualifiedAnchors"`
 }
 
 // ResultOf sums up findings.

@@ -15,6 +15,8 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
+	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
+	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists/trustedliststest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify/verifytest"
 )
 
@@ -32,7 +34,7 @@ func TestRun(t *testing.T) {
 	t.Setenv("ESDB_URL", "")
 	t.Setenv("ESDB_API_TOKEN", "")
 
-	valid := []string{"verify", "--server-url", "http://127.0.0.1:1", "--auditor-token", "token", "--root-public-key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", "--backup", "backup.json"}
+	valid := []string{"verify", "--server-url", "http://127.0.0.1:1", "--auditor-token", "token", "--root-public-key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", "--backup", "backup.json", "--skip-trusted-lists"}
 
 	t.Run("prints the version", func(t *testing.T) {
 		exitCode, stdout, _ := runWith("version")
@@ -55,6 +57,9 @@ func TestRun(t *testing.T) {
 		{"rejects an unknown format", append(append([]string{}, valid...), "--output", "xml"), "--output must be text or json"},
 		{"rejects a malformed root public key", append(append([]string{}, valid[:5]...), "--root-public-key", "not-a-key", "--backup", "backup.json"), "--root-public-key"},
 		{"fails if the custodian can not be reached", valid, "failed to read the instance"},
+		{"rejects skipping the trusted lists and reading them from a directory at once", append(append([]string{}, valid...), "--trusted-lists-directory", "lists"), "either --skip-trusted-lists or --trusted-lists-directory"},
+		{"fails if the trusted lists are not in the directory", append(append([]string{}, valid[:len(valid)-1]...), "--trusted-lists-directory", t.TempDir()), "failed to read the EU trusted lists"},
+		{"requires a directory to download the trusted lists into", []string{"download-trusted-lists"}, "--directory is required"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			exitCode, _, stderr := runWith(test.args...)
@@ -97,6 +102,7 @@ func TestVerify(t *testing.T) {
 			"--auditor-token", "auditor-token",
 			"--root-public-key", receipt.EncodeRawPublicKey(custodian.RootPublicKey),
 			"--backup", backupPath,
+			"--skip-trusted-lists",
 		}, extra...)
 	}
 
@@ -131,5 +137,81 @@ func TestVerify(t *testing.T) {
 
 		assert.Contains(t, stdout, "Event 2 has been changed")
 		assert.Equal(t, report.ExitCodeManipulation, exitCode)
+	})
+}
+
+func TestTrustedLists(t *testing.T) {
+	t.Setenv("SERVER_URL", "")
+	t.Setenv("AUDITOR_TOKEN", "")
+	t.Setenv("ROOT_PUBLIC_KEY", "")
+	t.Setenv("ESDB_URL", "")
+
+	original := newTrustedListsSource
+	newTrustedListsSource = func() trustedlists.Source { return trustedliststest.Source{} }
+	t.Cleanup(func() { newTrustedListsSource = original })
+
+	// newAnchoredBackup writes the backup with five events, and a custodian
+	// that has confirmed and anchored every one of them.
+	newAnchoredBackup := func(t *testing.T) (string, *verifytest.Custodian) {
+		t.Helper()
+
+		custodian := verifytest.NewCustodian(t)
+		var lastAt time.Time
+		for event, err := range database.ReadBackup(strings.NewReader(verifytest.BackupWithFiveEvents)) {
+			require.NoError(t, err)
+			lastAt = event.Time.Add(30 * time.Second)
+			custodian.Record(event.ID, event.Hash, lastAt)
+		}
+		custodian.Anchor(lastAt.Truncate(time.Hour))
+
+		path := filepath.Join(t.TempDir(), "backup.json")
+		require.NoError(t, os.WriteFile(path, []byte(verifytest.BackupWithFiveEvents), 0o600))
+
+		return path, custodian
+	}
+
+	verifyArgs := func(t *testing.T, custodian *verifytest.Custodian, backupPath string, extra ...string) []string {
+		t.Helper()
+
+		return append([]string{
+			"verify",
+			"--server-url", verifytest.NewServer(t, custodian, "auditor-token"),
+			"--auditor-token", "auditor-token",
+			"--root-public-key", receipt.EncodeRawPublicKey(custodian.RootPublicKey),
+			"--backup", backupPath,
+		}, extra...)
+	}
+
+	t.Run("downloads the trusted lists into a directory", func(t *testing.T) {
+		directory := filepath.Join(t.TempDir(), "lists")
+
+		exitCode, stdout, stderr := runWith("download-trusted-lists", "--directory", directory)
+
+		assert.Equal(t, report.ExitCodeNoFindings, exitCode)
+		assert.Contains(t, stdout, "Downloaded the trusted lists of 4 countries into "+directory)
+		assert.Contains(t, stderr, "Some trusted lists could not be downloaded")
+	})
+
+	t.Run("checks the time stamps against the trusted lists in a directory", func(t *testing.T) {
+		directory := t.TempDir()
+		_, err := trustedlists.Download(t.Context(), trustedliststest.Source{}, directory)
+		require.Error(t, err, "trustedliststest holds only some of the lists")
+
+		backupPath, custodian := newAnchoredBackup(t)
+
+		_, stdout, stderr := runWith(verifyArgs(t, custodian, backupPath, "--trusted-lists-directory", directory)...)
+
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "Trusted lists       list of the lists issued at 2026-09-24T12:04:06Z, 0 of 1 stamped anchors qualified")
+		assert.Contains(t, stdout, "does not count as a qualified time stamping service")
+	})
+
+	t.Run("fetches the trusted lists without a directory", func(t *testing.T) {
+		backupPath, custodian := newAnchoredBackup(t)
+
+		_, stdout, stderr := runWith(verifyArgs(t, custodian, backupPath)...)
+
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "0 of 1 stamped anchors qualified")
 	})
 }

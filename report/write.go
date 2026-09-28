@@ -45,7 +45,11 @@ func WriteText(out io.Writer, report Report) error {
 	} else {
 		fmt.Fprintf(&text, "Receipts directory  not given, so the custodian was not checked against the receipts the client kept\n")
 	}
-	if !report.TrustedListsChecked {
+	switch {
+	case report.TrustedListsChecked && report.TrustedLists != nil:
+		fmt.Fprintf(&text, "Trusted lists       list of the lists issued at %s, %d of %d stamped anchors qualified\n",
+			formatTime(report.TrustedLists.ListOfTheListsIssuedAt), report.TrustedLists.QualifiedAnchors, report.TrustedLists.StampedAnchors)
+	case !report.TrustedListsChecked:
 		fmt.Fprintf(&text, "Trusted lists       not checked, so whether the time stamps are qualified is not known\n")
 	}
 
