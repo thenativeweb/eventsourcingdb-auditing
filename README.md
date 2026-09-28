@@ -20,14 +20,13 @@ To verify an instance, you need the auditor token the customer has granted, the 
 
 ```shell
 $ eventsourcingdb-auditing verify \
-    --server-url <custodian-url> \
     --auditor-token <auditor-token> \
     --root-public-key <root-public-key> \
     --backup backup.json \
     --receipts-directory ./receipts
 ```
 
-The tool reads what the custodian has recorded about the instance, and checks:
+The tool reads from the custodian at `https://auditing.eventsourcingdb.io`, or from another one given with `--server-url`. It reads what the custodian has recorded about the instance, and checks:
 
 - that the keys of the custodian are certified by the root key, that its receipts form one chain, and that its anchors are signed, stamped, chained, prove the receipts of the instance without leaving any out, and match the public chain of anchors,
 - that every event of the backup still hashes to its hash, that the events form one chain, and that they match every fingerprint the custodian has confirmed since the latest reset of the baseline,

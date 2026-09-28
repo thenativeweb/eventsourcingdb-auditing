@@ -36,6 +36,13 @@ func TestRun(t *testing.T) {
 
 	valid := []string{"verify", "--server-url", "http://127.0.0.1:1", "--auditor-token", "token", "--root-public-key", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo", "--backup", "backup.json", "--skip-trusted-lists"}
 
+	t.Run("reads from the custodian of the native web by default", func(t *testing.T) {
+		exitCode, stdout, _ := runWith("verify", "--help")
+
+		assert.Equal(t, report.ExitCodeNoFindings, exitCode)
+		assert.Contains(t, stdout, `(default "https://auditing.eventsourcingdb.io")`)
+	})
+
 	t.Run("prints the version", func(t *testing.T) {
 		exitCode, stdout, _ := runWith("version")
 
@@ -48,7 +55,7 @@ func TestRun(t *testing.T) {
 		args    []string
 		message string
 	}{
-		{"requires the URL of the custodian", []string{"verify"}, "--server-url is required"},
+		{"requires the URL of the custodian", []string{"verify", "--server-url", ""}, "--server-url is required"},
 		{"requires the auditor token", []string{"verify", "--server-url", "http://127.0.0.1:1"}, "--auditor-token is required"},
 		{"requires the root public key", valid[:5], "--root-public-key is required"},
 		{"requires a backup or a database", valid[:7], "either --backup or --esdb-url is required"},
