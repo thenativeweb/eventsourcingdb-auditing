@@ -181,7 +181,13 @@ The custodian has every anchor stamped by a time stamping authority according to
 - The request asks for the certificate of the authority (`certReq`), and carries a nonce.
 - The time stamp token is kept in DER, and handed out in base64.
 
-A time stamp is valid if its message imprint is the digest of the anchor, with SHA-256, and if its signature verifies with the certificate it carries. The time of the time stamp is its `genTime`.
+A time stamp is valid if its message imprint is the digest of the anchor, with SHA-256, and if its signature verifies with the certificate it carries. The time of the time stamp is its `genTime`. In detail:
+
+1. The token is CMS signed data ([RFC 5652](https://www.rfc-editor.org/rfc/rfc5652)) with exactly one signer, whose content is the `TSTInfo`.
+2. The certificate of the signer MUST be among the certificates the token carries, found by issuer and serial number, or by subject key identifier.
+3. The signed attributes MUST name `id-ct-TSTInfo` as the content type, and carry the digest of the `TSTInfo` as the message digest, with SHA-256, SHA-384, or SHA-512.
+4. The signature over the signed attributes MUST verify with the key of the certificate, with RSA (PKCS #1 v1.5, or PSS with MGF1 over the same hash) or ECDSA, and SHA-256, SHA-384, or SHA-512.
+5. The `genTime` MUST lie within the validity of the certificate.
 
 ### 6.1 Qualified time stamps
 
