@@ -1,0 +1,157 @@
+{
+  "rootKey": {
+    "seed": "0101010101010101010101010101010101010101010101010101010101010101",
+    "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+    "keyId": "34750f98bd59fcfc946da45aaabe933b"
+  },
+  "signingKey": {
+    "seed": "0202020202020202020202020202020202020202020202020202020202020202",
+    "publicKey": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q",
+    "keyId": "6a3803d5f059902a1c6dafbc9ba47292",
+    "validFrom": "2026-01-01T00:00:00Z",
+    "validUntil": "2027-01-01T00:00:00Z",
+    "certificate": "eyJhbGciOiJFZERTQSIsInR5cCI6ImlvLnRoZW5hdGl2ZXdlYi5jdXN0b2R5LmtleS1jZXJ0aWZpY2F0ZSIsImtpZCI6IjM0NzUwZjk4YmQ1OWZjZmM5NDZkYTQ1YWFhYmU5MzNiIn0.eyJrZXlJZCI6IjZhMzgwM2Q1ZjA1OTkwMmExYzZkYWZiYzliYTQ3MjkyIiwicHVibGljS2V5IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInZhbGlkRnJvbSI6IjIwMjYtMDEtMDFUMDA6MDA6MDBaIiwidmFsaWRVbnRpbCI6IjIwMjctMDEtMDFUMDA6MDA6MDBaIn0.HbIEK5ejrTHFHos3UGSuVkVMPgwXj4XF-Hr_8KRtpGID2ukuk1Myjte1Y_hdRINBjr0MThdxlObWUdeqZ3ivCw"
+  },
+  "receipts": [
+    {
+      "claims": {
+        "instanceId": "instance-1",
+        "eventId": "0",
+        "eventHash": "b6ae7a219468eeb110cf20151d9a8dc091ed40390a1411e36c183bf6a804900f",
+        "receivedAt": "2026-09-01T10:05:00Z",
+        "sequence": 1,
+        "previousReceiptHash": ""
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImlvLnRoZW5hdGl2ZXdlYi5jdXN0b2R5LnJlY2VpcHQiLCJraWQiOiI2YTM4MDNkNWYwNTk5MDJhMWM2ZGFmYmM5YmE0NzI5MiJ9.eyJpbnN0YW5jZUlkIjoiaW5zdGFuY2UtMSIsImV2ZW50SWQiOiIwIiwiZXZlbnRIYXNoIjoiYjZhZTdhMjE5NDY4ZWViMTEwY2YyMDE1MWQ5YThkYzA5MWVkNDAzOTBhMTQxMWUzNmMxODNiZjZhODA0OTAwZiIsInJlY2VpdmVkQXQiOiIyMDI2LTA5LTAxVDEwOjA1OjAwWiIsInNlcXVlbmNlIjoxLCJwcmV2aW91c1JlY2VpcHRIYXNoIjoiIn0.JsW5lLRx724LqFpqZIazqpCvx9r4ZC1FrHFg155jYgocukGntHk6MlxvcJ-i0BqNfafeiiCOc5O2R3Wx50rBCg",
+      "hash": "5a527f1d91db4f319b79f3a3c7fb9090d6be840293ca69856d0da73a6e7db995"
+    },
+    {
+      "claims": {
+        "instanceId": "instance-1",
+        "eventId": "2",
+        "eventHash": "64d040f3bcf26b3a17f3172ddf56443cffa7f10fcd407eada39f2484bba36dea",
+        "receivedAt": "2026-09-01T10:20:00Z",
+        "sequence": 2,
+        "previousReceiptHash": "5a527f1d91db4f319b79f3a3c7fb9090d6be840293ca69856d0da73a6e7db995"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImlvLnRoZW5hdGl2ZXdlYi5jdXN0b2R5LnJlY2VpcHQiLCJraWQiOiI2YTM4MDNkNWYwNTk5MDJhMWM2ZGFmYmM5YmE0NzI5MiJ9.eyJpbnN0YW5jZUlkIjoiaW5zdGFuY2UtMSIsImV2ZW50SWQiOiIyIiwiZXZlbnRIYXNoIjoiNjRkMDQwZjNiY2YyNmIzYTE3ZjMxNzJkZGY1NjQ0M2NmZmE3ZjEwZmNkNDA3ZWFkYTM5ZjI0ODRiYmEzNmRlYSIsInJlY2VpdmVkQXQiOiIyMDI2LTA5LTAxVDEwOjIwOjAwWiIsInNlcXVlbmNlIjoyLCJwcmV2aW91c1JlY2VpcHRIYXNoIjoiNWE1MjdmMWQ5MWRiNGYzMTliNzlmM2EzYzdmYjkwOTBkNmJlODQwMjkzY2E2OTg1NmQwZGE3M2E2ZTdkYjk5NSJ9.PJ5HplTVQEIFZpkL4RIInrTndnGwbuoW0UqaLxzuMoYM5ZRop5ymMP8ToRE7VUXloMgIPlVwYOkeC-s9ToJCDg",
+      "hash": "1f8465c67babe7030b1b226868149b9467981e7a5b86e01c9a399ddeab879800"
+    },
+    {
+      "claims": {
+        "instanceId": "instance-1",
+        "eventId": "4",
+        "eventHash": "084d451c2a2606c85577a5aec38d28837d3db41f590106c85426b535bb03a705",
+        "receivedAt": "2026-09-01T10:40:00Z",
+        "sequence": 3,
+        "previousReceiptHash": "1f8465c67babe7030b1b226868149b9467981e7a5b86e01c9a399ddeab879800"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImlvLnRoZW5hdGl2ZXdlYi5jdXN0b2R5LnJlY2VpcHQiLCJraWQiOiI2YTM4MDNkNWYwNTk5MDJhMWM2ZGFmYmM5YmE0NzI5MiJ9.eyJpbnN0YW5jZUlkIjoiaW5zdGFuY2UtMSIsImV2ZW50SWQiOiI0IiwiZXZlbnRIYXNoIjoiMDg0ZDQ1MWMyYTI2MDZjODU1NzdhNWFlYzM4ZDI4ODM3ZDNkYjQxZjU5MDEwNmM4NTQyNmI1MzViYjAzYTcwNSIsInJlY2VpdmVkQXQiOiIyMDI2LTA5LTAxVDEwOjQwOjAwWiIsInNlcXVlbmNlIjozLCJwcmV2aW91c1JlY2VpcHRIYXNoIjoiMWY4NDY1YzY3YmFiZTcwMzBiMWIyMjY4NjgxNDliOTQ2Nzk4MWU3YTViODZlMDFjOWEzOTlkZGVhYjg3OTgwMCJ9.2RJ3Yi3T4vmei08Bo0kHIbQUCqRgXvArGC0aNKDDPrtVgypeXVP1d0dgZrDEi-yv_ETGjjlRW7n0SGkXp8KLBw",
+      "hash": "c8eaf00e6131e64a98f9c04aac4b25ab38afa196c1afc51f6589af7d7f13b588"
+    }
+  ],
+  "merkleTree": {
+    "leaves": [
+      {
+        "salt": "1010101010101010101010101010101010101010101010101010101010101010",
+        "receiptHash": "c8eaf00e6131e64a98f9c04aac4b25ab38afa196c1afc51f6589af7d7f13b588",
+        "leafHash": "83ed52f2eb6213598795cf2bc18ee93e39bf238730f9177e8b8ce03b2b10968a"
+      },
+      {
+        "salt": "1111111111111111111111111111111111111111111111111111111111111111",
+        "receiptHash": "2121212121212121212121212121212121212121212121212121212121212121",
+        "leafHash": "9bcf1197c6ae755d26c1ee7ef27526a95ae07fd8d6be6d46ff6b9acd8dce8e10"
+      },
+      {
+        "salt": "1212121212121212121212121212121212121212121212121212121212121212",
+        "receiptHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "leafHash": "40e912613c4d95b03d24f1afc451a90571cd4af0097e3ca3275772bbde8475bc"
+      },
+      {
+        "salt": "1313131313131313131313131313131313131313131313131313131313131313",
+        "receiptHash": "2323232323232323232323232323232323232323232323232323232323232323",
+        "leafHash": "93c4e60986474571b9a36c5f44c419faf682c93a8850ba77d251a7e2a4abc592"
+      },
+      {
+        "salt": "1414141414141414141414141414141414141414141414141414141414141414",
+        "receiptHash": "2424242424242424242424242424242424242424242424242424242424242424",
+        "leafHash": "4f35263fe4557c8b295f2282f7353d22bc59924d54f43c9bb3bcd2d034ff7ec7"
+      }
+    ],
+    "root": "f4d986eb1e650fcdf11488dcc61d82864f588cacfd77e7d2da539566e76cd0b2",
+    "proofs": {
+      "0": {
+        "leaf": 0,
+        "siblings": [
+          {
+            "hash": "9bcf1197c6ae755d26c1ee7ef27526a95ae07fd8d6be6d46ff6b9acd8dce8e10",
+            "position": "right"
+          },
+          {
+            "hash": "9d16589c9918be2554a6ce4f777f9e98ea3273c4637fd53451873e1d21253b92",
+            "position": "right"
+          },
+          {
+            "hash": "4f35263fe4557c8b295f2282f7353d22bc59924d54f43c9bb3bcd2d034ff7ec7",
+            "position": "right"
+          }
+        ]
+      },
+      "4": {
+        "leaf": 4,
+        "siblings": [
+          {
+            "hash": "077160c164653b1034ace63a6995cae1aa9faa98c3e50e06b784882bc06e33c8",
+            "position": "left"
+          }
+        ]
+      }
+    }
+  },
+  "anchors": [
+    {
+      "claims": {
+        "hour": "2026-09-01T10:00:00Z",
+        "root": "f4d986eb1e650fcdf11488dcc61d82864f588cacfd77e7d2da539566e76cd0b2",
+        "leafCount": 5,
+        "previousAnchorHash": ""
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImlvLnRoZW5hdGl2ZXdlYi5jdXN0b2R5LmFuY2hvciIsImtpZCI6IjZhMzgwM2Q1ZjA1OTkwMmExYzZkYWZiYzliYTQ3MjkyIn0.eyJob3VyIjoiMjAyNi0wOS0wMVQxMDowMDowMFoiLCJyb290IjoiZjRkOTg2ZWIxZTY1MGZjZGYxMTQ4OGRjYzYxZDgyODY0ZjU4OGNhY2ZkNzdlN2QyZGE1Mzk1NjZlNzZjZDBiMiIsImxlYWZDb3VudCI6NSwicHJldmlvdXNBbmNob3JIYXNoIjoiIn0.4kMCIICHBzJLsfeNfBSKyblMI5acaBQUeeLS1J7daDTUQQyFQMilGUoV9K1mOLDWifcuQuluY4Gk6Aw4YUzZDw",
+      "hash": "dc1f370ba6c0cf27a66424c7b75ee1d885b411eef5920a03d7ad4c3efb5bf048",
+      "digest": "dc1f370ba6c0cf27a66424c7b75ee1d885b411eef5920a03d7ad4c3efb5bf048"
+    },
+    {
+      "claims": {
+        "hour": "2026-09-01T11:00:00Z",
+        "root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "leafCount": 0,
+        "previousAnchorHash": "dc1f370ba6c0cf27a66424c7b75ee1d885b411eef5920a03d7ad4c3efb5bf048"
+      },
+      "jws": "eyJhbGciOiJFZERTQSIsInR5cCI6ImlvLnRoZW5hdGl2ZXdlYi5jdXN0b2R5LmFuY2hvciIsImtpZCI6IjZhMzgwM2Q1ZjA1OTkwMmExYzZkYWZiYzliYTQ3MjkyIn0.eyJob3VyIjoiMjAyNi0wOS0wMVQxMTowMDowMFoiLCJyb290IjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImxlYWZDb3VudCI6MCwicHJldmlvdXNBbmNob3JIYXNoIjoiZGMxZjM3MGJhNmMwY2YyN2E2NjQyNGM3Yjc1ZWUxZDg4NWI0MTFlZWY1OTIwYTAzZDdhZDRjM2VmYjViZjA0OCJ9.U-X9N5449SzwZwkhYGsktTP4nu9JxEJv_SvuBJ2lebUZrxBvzFA9lVDxta5qz51dkaGPzSZ8_QtPRTMtH7S2BA",
+      "hash": "6928531ec71955b3bd67154ca5393a0b4e53ec6fb84967945c7718d052380078",
+      "digest": "6928531ec71955b3bd67154ca5393a0b4e53ec6fb84967945c7718d052380078"
+    }
+  ],
+  "eventHashes": [
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"tag:thenativeweb.io,2023:test\",\"subject\":\"/users/anne\",\"type\":\"io.thenativeweb.test.registered\",\"traceparent\":\"00-00000000000000000000000000000001-0000000000000001-01\",\"tracestate\":\"a=1\",\"specversion\":\"1\",\"id\":\"0\",\"time\":\"2023-01-02T13:37:00.0001Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"data\":{\"username\":\"anne\"}},\"hash\":\"b6ae7a219468eeb110cf20151d9a8dc091ed40390a1411e36c183bf6a804900f\"}}",
+      "hash": "b6ae7a219468eeb110cf20151d9a8dc091ed40390a1411e36c183bf6a804900f"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"tag:thenativeweb.io,2023:test\",\"subject\":\"/users/anne\",\"type\":\"io.thenativeweb.test.loggedIn\",\"traceparent\":\"00-00000000000000000000000000000002-0000000000000002-02\",\"tracestate\":\"a=2\",\"specversion\":\"2\",\"id\":\"1\",\"time\":\"2023-01-02T13:37:00.0002Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"b6ae7a219468eeb110cf20151d9a8dc091ed40390a1411e36c183bf6a804900f\",\"data\":{\"username\":\"anne\"}},\"hash\":\"a97f96c1a2b61ea7fa1f6249079f624a244f783357e5b0b8e27b32b363a04263\"}}",
+      "hash": "a97f96c1a2b61ea7fa1f6249079f624a244f783357e5b0b8e27b32b363a04263"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"tag:thenativeweb.io,2023:test\",\"subject\":\"/users/arno\",\"type\":\"io.thenativeweb.test.registered\",\"traceparent\":\"00-00000000000000000000000000000003-0000000000000003-03\",\"tracestate\":\"a=3\",\"specversion\":\"3\",\"id\":\"2\",\"time\":\"2023-01-02T13:37:01.0001Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"a97f96c1a2b61ea7fa1f6249079f624a244f783357e5b0b8e27b32b363a04263\",\"data\":{\"username\":\"arno\"}},\"hash\":\"64d040f3bcf26b3a17f3172ddf56443cffa7f10fcd407eada39f2484bba36dea\"}}",
+      "hash": "64d040f3bcf26b3a17f3172ddf56443cffa7f10fcd407eada39f2484bba36dea"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"tag:thenativeweb.io,2023:test\",\"subject\":\"/users/arno\",\"type\":\"io.thenativeweb.test.loggedIn\",\"traceparent\":\"00-00000000000000000000000000000004-0000000000000004-04\",\"tracestate\":\"a=4\",\"specversion\":\"4\",\"id\":\"3\",\"time\":\"2023-01-02T13:37:01.0002Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"64d040f3bcf26b3a17f3172ddf56443cffa7f10fcd407eada39f2484bba36dea\",\"data\":{\"username\":\"arno\"}},\"hash\":\"f8fa12a86ccc776c94ad95802ed1fc1d182a17dbeed9846381711f062a5d2a47\"}}",
+      "hash": "f8fa12a86ccc776c94ad95802ed1fc1d182a17dbeed9846381711f062a5d2a47"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"tag:thenativeweb.io,2023:test\",\"subject\":\"/users\",\"type\":\"io.thenativeweb.test.foo\",\"traceparent\":\"00-00000000000000000000000000000005-0000000000000005-05\",\"tracestate\":\"a=5\",\"specversion\":\"5\",\"id\":\"4\",\"time\":\"2023-01-02T13:37:02.0001Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"f8fa12a86ccc776c94ad95802ed1fc1d182a17dbeed9846381711f062a5d2a47\",\"data\":{}},\"hash\":\"084d451c2a2606c85577a5aec38d28837d3db41f590106c85426b535bb03a705\"}}",
+      "hash": "084d451c2a2606c85577a5aec38d28837d3db41f590106c85426b535bb03a705"
+    }
+  ]
+}
