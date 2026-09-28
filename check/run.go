@@ -40,10 +40,21 @@ type Options struct {
 	// custodian is to be checked against it.
 	ReceiptsDirectory string
 
+	// TrustedLists checks the time stamps against the EU trusted lists, or
+	// is nil if they are not to be checked.
+	TrustedLists TrustedLists
+
 	ToolVersion string
 
 	// Now returns the time of the verification. It defaults to time.Now.
 	Now func() time.Time
+}
+
+// TrustedLists tells whether a time stamping service was qualified, and on
+// which state of the trusted lists. trustedlists.Checker is one.
+type TrustedLists interface {
+	verify.QualificationChecker
+	ListOfTheListsIssuedAt() time.Time
 }
 
 // Run runs a verification, and returns its report. It only fails if something
@@ -108,6 +119,21 @@ func Run(ctx context.Context, options Options) (report.Report, error) {
 		built.Sources.ReceiptsDirectory = options.ReceiptsDirectory
 		built.ReceiptsDirectoryChecked = true
 		built.Findings = append(built.Findings, verify.VerifyKept(kept, custodian, options.RootPublicKey)...)
+	}
+
+	if options.TrustedLists != nil {
+		qualification, err := verify.VerifyQualification(ctx, custodian.Anchors, options.TrustedLists)
+		if err != nil {
+			return report.Report{}, fmt.Errorf("failed to check the time stamps against the trusted lists: %w", err)
+		}
+
+		built.TrustedListsChecked = true
+		built.TrustedLists = &report.TrustedLists{
+			ListOfTheListsIssuedAt: options.TrustedLists.ListOfTheListsIssuedAt(),
+			StampedAnchors:         qualification.Stamped,
+			QualifiedAnchors:       qualification.Qualified,
+		}
+		built.Findings = append(built.Findings, qualification.Findings...)
 	}
 
 	if built.Findings == nil {

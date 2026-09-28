@@ -2,8 +2,6 @@ package trustedlists
 
 import (
 	"bytes"
-	"compress/gzip"
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -11,61 +9,23 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"math/big"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/beevik/etree"
 	dsig "github.com/russellhaering/goxmldsig"
 	"github.com/stretchr/testify/require"
+	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists/trustedliststest"
 )
-
-// The trusted lists in testdata are real ones: the list of the lists of
-// 2026-09-24, and the lists of Germany (RSA with PSS), Hungary (ECDSA with
-// SHA-256), Slovenia (ECDSA with SHA-512), and Iceland (RSA with SHA-256).
-var testdataByURL = map[string]string{
-	ListOfTheListsURL: "eu-lotl.xml.gz",
-	"https://tl.bundesnetzagentur.de/TL-DE.xml":                "de.xml.gz",
-	"https://www.nmhh.hu/tl/pub/HU_TL.xml":                     "hu.xml.gz",
-	"https://www.tl.gov.si/SI_TL.xml":                          "si.xml.gz",
-	"https://tsl.fjarskiptastofa.is/library/skrar/tsl/tsl.xml": "is.xml.gz",
-}
 
 func readTestdata(t testing.TB, name string) []byte {
 	t.Helper()
 
-	file, err := os.Open(filepath.Join("testdata", name))
-	require.NoError(t, err)
-	defer file.Close()
-
-	reader, err := gzip.NewReader(file)
-	require.NoError(t, err)
-
-	data, err := io.ReadAll(reader)
+	data, err := trustedliststest.Read(name)
 	require.NoError(t, err)
 
 	return data
-}
-
-// testdataSource provides the trusted lists in testdata by their URLs, and
-// any other list from the given map.
-type testdataSource struct {
-	t     testing.TB
-	extra map[string][]byte
-}
-
-func (s testdataSource) Fetch(ctx context.Context, url string) ([]byte, error) {
-	if data, isKnown := s.extra[url]; isKnown {
-		return data, nil
-	}
-	if name, isKnown := testdataByURL[url]; isKnown {
-		return readTestdata(s.t, name), nil
-	}
-
-	return nil, fmt.Errorf("%s is not in testdata", url)
 }
 
 // testKey is a key with a self-signed certificate, for signing test lists.

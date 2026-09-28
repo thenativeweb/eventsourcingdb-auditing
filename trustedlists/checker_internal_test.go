@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists/trustedliststest"
 )
 
 // dgnCertificate returns the certificate of a time stamping unit of DGN, as the
@@ -73,7 +74,7 @@ func newCertificate(t *testing.T, subject pkix.Name, issuer *x509.Certificate, i
 func newTestdataChecker(t *testing.T) *Checker {
 	t.Helper()
 
-	checker, err := NewChecker(t.Context(), testdataSource{t: t})
+	checker, err := NewChecker(t.Context(), trustedliststest.Source{})
 	require.NoError(t, err)
 
 	return checker
@@ -88,7 +89,7 @@ func TestNewChecker(t *testing.T) {
 
 	t.Run("follows the pivots to a certificate that is announced later", func(t *testing.T) {
 		oldKey, newKey := newTestKey(t, "Old LOTL Signer"), newTestKey(t, "New LOTL Signer")
-		source := testdataSource{t: t, extra: map[string][]byte{
+		source := trustedliststest.Source{Extra: map[string][]byte{
 			"https://example.com/lotl.xml":    newKey.sign(t, listOfTheLists([]string{"https://example.com/pivot-2.xml", "https://example.com/pivot-1.xml"}, newKey)),
 			"https://example.com/pivot-2.xml": newKey.sign(t, listOfTheLists(nil, newKey)),
 			"https://example.com/pivot-1.xml": oldKey.sign(t, listOfTheLists(nil, newKey)),
@@ -101,7 +102,7 @@ func TestNewChecker(t *testing.T) {
 
 	t.Run("does not trust a certificate announced by a pivot it does not trust", func(t *testing.T) {
 		oldKey, newKey, strangerKey := newTestKey(t, "Old LOTL Signer"), newTestKey(t, "New LOTL Signer"), newTestKey(t, "Stranger")
-		source := testdataSource{t: t, extra: map[string][]byte{
+		source := trustedliststest.Source{Extra: map[string][]byte{
 			"https://example.com/lotl.xml":    newKey.sign(t, listOfTheLists([]string{"https://example.com/pivot-1.xml"}, newKey)),
 			"https://example.com/pivot-1.xml": strangerKey.sign(t, listOfTheLists(nil, newKey)),
 		}}
@@ -114,7 +115,7 @@ func TestNewChecker(t *testing.T) {
 	t.Run("does not trust a list of another type", func(t *testing.T) {
 		key := newTestKey(t, "LOTL Signer")
 		list := strings.Replace(listOfTheLists(nil), "<TSLType>"+listTypeListOfTheLists, "<TSLType>"+listTypeGeneric, 1)
-		source := testdataSource{t: t, extra: map[string][]byte{"https://example.com/lotl.xml": key.sign(t, list)}}
+		source := trustedliststest.Source{Extra: map[string][]byte{"https://example.com/lotl.xml": key.sign(t, list)}}
 
 		_, err := NewChecker(t.Context(), source, WithListOfTheLists("https://example.com/lotl.xml", fingerprint(key.certificate)))
 
@@ -122,9 +123,9 @@ func TestNewChecker(t *testing.T) {
 	})
 
 	t.Run("fails if the list of the lists can not be fetched", func(t *testing.T) {
-		_, err := NewChecker(t.Context(), testdataSource{t: t}, WithListOfTheLists("https://example.com/missing.xml"))
+		_, err := NewChecker(t.Context(), trustedliststest.Source{}, WithListOfTheLists("https://example.com/missing.xml"))
 
-		assert.ErrorContains(t, err, "not in testdata")
+		assert.ErrorContains(t, err, "is not among the lists of trustedliststest")
 	})
 }
 
@@ -185,7 +186,7 @@ func TestQualification(t *testing.T) {
 
 		_, err := checker.Qualification(t.Context(), french, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
 
-		assert.ErrorContains(t, err, "not in testdata")
+		assert.ErrorContains(t, err, "is not among the lists of trustedliststest")
 	})
 }
 
@@ -239,10 +240,10 @@ func TestDownload(t *testing.T) {
 	t.Run("writes the lists into a directory, from which they are checked without network", func(t *testing.T) {
 		directory := t.TempDir()
 
-		countries, err := Download(t.Context(), testdataSource{t: t}, directory)
+		countries, err := Download(t.Context(), trustedliststest.Source{}, directory)
 
 		assert.ElementsMatch(t, []string{"DE", "HU", "SI", "IS"}, countries)
-		assert.ErrorContains(t, err, "FR: ", "the lists that are not in testdata fail, without stopping the others")
+		assert.ErrorContains(t, err, "FR: ", "the lists that are not in trustedliststest fail, without stopping the others")
 
 		checker, err := NewChecker(t.Context(), DirectorySource{Path: directory})
 		require.NoError(t, err)

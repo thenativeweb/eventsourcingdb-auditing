@@ -89,13 +89,14 @@ func TestWriteText(t *testing.T) {
 		built.Sources.ReceiptsDirectory = "/receipts"
 		built.ReceiptsDirectoryChecked = true
 		built.TrustedListsChecked = true
+		built.TrustedLists = &report.TrustedLists{ListOfTheListsIssuedAt: tenOClock, StampedAnchors: 2, QualifiedAnchors: 1}
 
 		var out bytes.Buffer
 		require.NoError(t, report.WriteText(&out, built))
 
 		assert.Contains(t, out.String(), "Database            http://localhost:3000")
 		assert.Contains(t, out.String(), "Receipts directory  /receipts")
-		assert.NotContains(t, out.String(), "Trusted lists")
+		assert.Contains(t, out.String(), "Trusted lists       list of the lists issued at 2026-09-01T10:00:00Z, 1 of 2 stamped anchors qualified")
 		assert.Contains(t, out.String(), "NO FINDINGS")
 	})
 }

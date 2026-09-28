@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt/receipttest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
+	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify/verifytest"
 	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
@@ -233,4 +236,54 @@ func TestRun(t *testing.T) {
 
 		assert.ErrorContains(t, err, "failed to open the backup")
 	})
+
+	t.Run("checks the time stamps of the anchors against the trusted lists", func(t *testing.T) {
+		instance := newInstance(t)
+		instance.custodian.Anchor(instance.now.Truncate(time.Hour))
+		instance.serverURL = verifytest.NewServer(t, instance.custodian, testAuditorToken)
+
+		issuedAt := time.Date(2026, 9, 24, 12, 4, 6, 0, time.UTC)
+		options := instance.options(t)
+		options.ServerURL = instance.serverURL
+		options.TrustedLists = fakeTrustedLists{issuedAt: issuedAt, reason: "the certificate names no country, so no trusted list applies to it"}
+
+		built, err := check.Run(t.Context(), options)
+
+		require.NoError(t, err)
+		assert.True(t, built.TrustedListsChecked)
+		require.NotNil(t, built.TrustedLists)
+		assert.Equal(t, issuedAt, built.TrustedLists.ListOfTheListsIssuedAt)
+		assert.Equal(t, 1, built.TrustedLists.StampedAnchors)
+		assert.Equal(t, 0, built.TrustedLists.QualifiedAnchors)
+		require.Len(t, built.Findings, 1)
+		assert.Equal(t, verify.CheckQualification, built.Findings[0].Check)
+		assert.Equal(t, report.ResultNoFindings, built.Result, "a time stamp that is not qualified is a notice")
+	})
+
+	t.Run("fails if the trusted lists can not be checked", func(t *testing.T) {
+		instance := newInstance(t)
+		instance.custodian.Anchor(instance.now.Truncate(time.Hour))
+		options := instance.options(t)
+		options.ServerURL = verifytest.NewServer(t, instance.custodian, testAuditorToken)
+		options.TrustedLists = fakeTrustedLists{err: errors.New("the trusted list of DE is not reachable")}
+
+		_, err := check.Run(t.Context(), options)
+
+		assert.ErrorContains(t, err, "not reachable")
+	})
+}
+
+// fakeTrustedLists answers every question about qualification the same way.
+type fakeTrustedLists struct {
+	issuedAt time.Time
+	reason   string
+	err      error
+}
+
+func (f fakeTrustedLists) Qualification(ctx context.Context, certificate *x509.Certificate, at time.Time) (trustedlists.Qualification, error) {
+	return trustedlists.Qualification{Reason: f.reason}, f.err
+}
+
+func (f fakeTrustedLists) ListOfTheListsIssuedAt() time.Time {
+	return f.issuedAt
 }

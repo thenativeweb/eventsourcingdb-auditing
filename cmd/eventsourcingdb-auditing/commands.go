@@ -6,13 +6,21 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/thenativeweb/eventsourcingdb-auditing/check"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
+	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
 	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
 )
+
+// newTrustedListsSource returns where the EU trusted lists are fetched from.
+// Tests replace it, so that they need no network.
+var newTrustedListsSource = func() trustedlists.Source {
+	return trustedlists.NewHTTPSource()
+}
 
 func newRootCommand(stdout io.Writer, exitCode *int) *cobra.Command {
 	root := &cobra.Command{
@@ -26,6 +34,7 @@ func newRootCommand(stdout io.Writer, exitCode *int) *cobra.Command {
 	}
 
 	root.AddCommand(newVerifyCommand(stdout, exitCode))
+	root.AddCommand(newDownloadTrustedListsCommand(stdout))
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Prints the version",
@@ -48,6 +57,9 @@ func newVerifyCommand(stdout io.Writer, exitCode *int) *cobra.Command {
 		esdbAPIToken      string
 		receiptsDirectory string
 		output            string
+
+		trustedListsDirectory string
+		skipTrustedLists      bool
 	)
 
 	command := &cobra.Command{
@@ -56,6 +68,10 @@ func newVerifyCommand(stdout io.Writer, exitCode *int) *cobra.Command {
 		Long: `Verifies an instance: what the custodian has recorded about it, its events,
 either from a backup or from the running database, and, if given, the receipts
 its client has kept.
+
+The time stamps of the anchors are checked against the EU trusted lists, which
+are fetched from where they are published, or read from a directory that
+download-trusted-lists has filled.
 
 The exit code is 0 if nothing was found, 1 if a manipulation was found, 2 if
 only gaps in protection were found, and 3 if the verification could not be run.`,
@@ -73,6 +89,8 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 				return errors.New("--esdb-api-token is required with --esdb-url")
 			case output != "text" && output != "json":
 				return fmt.Errorf("--output must be text or json, got %q", output)
+			case skipTrustedLists && trustedListsDirectory != "":
+				return errors.New("either --skip-trusted-lists or --trusted-lists-directory, but not both")
 			}
 
 			decodedRootPublicKey, err := receipt.DecodeRawPublicKey(rootPublicKey)
@@ -106,6 +124,19 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 				options.DatabaseURL = esdbURL
 			}
 
+			if !skipTrustedLists {
+				source := newTrustedListsSource()
+				if trustedListsDirectory != "" {
+					source = trustedlists.DirectorySource{Path: trustedListsDirectory}
+				}
+
+				checker, err := trustedlists.NewChecker(command.Context(), source)
+				if err != nil {
+					return fmt.Errorf("failed to read the EU trusted lists, so the time stamps can not be checked (use --trusted-lists-directory to read them from a directory, or --skip-trusted-lists to leave them out): %w", err)
+				}
+				options.TrustedLists = checker
+			}
+
 			built, err := check.Run(command.Context(), options)
 			if err != nil {
 				return err
@@ -135,6 +166,52 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 	flags.StringVar(&esdbAPIToken, "esdb-api-token", os.Getenv("ESDB_API_TOKEN"), "sets the API token of the running database")
 	flags.StringVar(&receiptsDirectory, "receipts-directory", "", "sets the receipts directory of the client, to check the custodian against it")
 	flags.StringVar(&output, "output", "text", "sets the format of the report, text or json")
+	flags.StringVar(&trustedListsDirectory, "trusted-lists-directory", "", "reads the EU trusted lists from a directory that download-trusted-lists has filled, instead of fetching them")
+	flags.BoolVar(&skipTrustedLists, "skip-trusted-lists", false, "leaves out checking the time stamps against the EU trusted lists")
+
+	return command
+}
+
+func newDownloadTrustedListsCommand(stdout io.Writer) *cobra.Command {
+	var directory string
+
+	command := &cobra.Command{
+		Use:   "download-trusted-lists",
+		Short: "Downloads the EU trusted lists, for verifying without network",
+		Long: `Downloads the list of the trusted lists of the European Commission, and the
+trusted list of every member state it points to, into a directory, from which
+verify --trusted-lists-directory reads them without network. Every list is
+checked before it is written.`,
+		RunE: func(command *cobra.Command, args []string) error {
+			if directory == "" {
+				return errors.New("--directory is required")
+			}
+
+			command.SilenceUsage = true
+
+			err := os.MkdirAll(directory, 0o755)
+			if err != nil {
+				return err
+			}
+
+			countries, err := trustedlists.Download(command.Context(), newTrustedListsSource(), directory)
+			if len(countries) == 0 && err != nil {
+				return err
+			}
+
+			_, writeErr := fmt.Fprintf(stdout, "Downloaded the trusted lists of %d countries into %s: %s\n", len(countries), directory, strings.Join(countries, ", "))
+			if writeErr != nil {
+				return writeErr
+			}
+			if err != nil {
+				fmt.Fprintf(command.ErrOrStderr(), "Some trusted lists could not be downloaded, which only matters if a time stamping authority of these countries is to be checked:\n%v\n", err)
+			}
+
+			return nil
+		},
+	}
+
+	command.Flags().StringVar(&directory, "directory", "", "sets the directory to write the trusted lists into")
 
 	return command
 }
