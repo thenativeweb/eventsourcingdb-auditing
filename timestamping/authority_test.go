@@ -26,6 +26,11 @@ func TestAuthority(t *testing.T) {
 		verified, err := timestamping.Verify(token.Raw, digest)
 		require.NoError(t, err)
 		assert.Equal(t, token.Time, verified.Time)
+
+		require.NotNil(t, token.Certificate, "the time stamp names the certificate it was signed with")
+		require.NotNil(t, verified.Certificate)
+		assert.True(t, token.Certificate.Equal(verified.Certificate))
+		assert.Equal(t, "Test Time Stamping Authority", token.Certificate.Subject.CommonName)
 	})
 
 	t.Run("rejects a time stamp for another digest", func(t *testing.T) {

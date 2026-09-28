@@ -58,6 +58,7 @@ It contains the following packages:
 - `database` reads the events of the EventSourcingDB of a customer, either from a backup, as EventSourcingDB writes it on `/api/v1/backup`, or from the running database, and checks for every event whether its content still hashes to its hash. From a backup, the time and the data are hashed exactly as they were written, so that escapes in the data do not get lost.
 - `verify` checks what the custodian has recorded about an instance: that its keys are certified by the root key, that its receipts form one chain that matches its entries, that its anchors are signed, stamped, chained, and prove the receipts of the instance without leaving any out, that they match the public chain of anchors, and that the client was never silent for longer than its heartbeat interval. It then checks the events of the instance against it: that every event still hashes to its hash, that the events form one chain, that they match every fingerprint the custodian has confirmed since the latest reset of the baseline, and how long every event stayed without the protection of a fingerprint. Every problem becomes a finding, either a manipulation, a gap in protection, or a notice, so that a report can list them all.
 
+- `trustedlists` tells whether a time stamp was issued by a qualified time stamping service, using the EU trusted lists. It checks the XAdES signature of the list of the lists against the certificates the European Commission has announced in the Official Journal (C/2026/1944), following pivot lists to later ones, and the signature of the list of every member state against the certificates the list of the lists names for it. A time stamp counts as qualified if the certificate it was signed with, or the one that issued it, is the digital identity of a QTST service that was granted at the time of the time stamp. The lists are fetched from where they are published, or read from a directory, which `trustedlists.Download` fills, for verifying without network.
 - `receiptsdir` reads the receipts directory of the client.
 - `report` sums up the findings of a verification, and writes them as text or as JSON.
 - `check` runs a whole verification, which is what the command line tool does.
@@ -79,4 +80,10 @@ $ TIMESTAMP_AUTHORITY_URL=<rfc-3161-url> \
   TIMESTAMP_AUTHORITY_USERNAME=<username> \
   TIMESTAMP_AUTHORITY_PASSWORD=<password> \
   go test -run TestInterop -v ./timestamping/
+```
+
+The tests of `trustedlists` use real trusted lists from `trustedlists/testdata`: the list of the lists, and the lists of Germany, Hungary, Slovenia, and Iceland, which cover every signature method the lists use. To check against the lists as they are published now, including whether the certificates announced in the Official Journal still sign the list of the lists, run:
+
+```shell
+$ EU_TRUSTED_LISTS=1 go test -run TestLiveLists -v ./trustedlists/
 ```
