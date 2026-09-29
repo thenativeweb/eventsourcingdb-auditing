@@ -8,7 +8,7 @@ require (
 	github.com/russellhaering/goxmldsig v1.6.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
-	github.com/thenativeweb/eventsourcingdb-client-golang v1.5.6
+	github.com/thenativeweb/eventsourcingdb-client-golang v1.6.0
 )
 
 require (

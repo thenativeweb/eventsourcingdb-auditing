@@ -27,6 +27,7 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify/verifytest"
 	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdbtest"
 )
 
 const testAuditorToken = "auditor-token"
@@ -34,7 +35,7 @@ const testAuditorToken = "auditor-token"
 // instance is an EventSourcingDB with events, a custodian that has confirmed
 // every one of them half a minute after it was written, and a backup of it.
 type instance struct {
-	container  *eventsourcingdb.Container
+	container  *eventsourcingdbtest.Container
 	client     *eventsourcingdb.Client
 	custodian  *verifytest.Custodian
 	serverURL  string
@@ -45,7 +46,7 @@ type instance struct {
 func newInstance(t *testing.T) instance {
 	t.Helper()
 
-	container := eventsourcingdb.NewContainer()
+	container := eventsourcingdbtest.NewContainer()
 	require.NoError(t, container.Start(t.Context()))
 	t.Cleanup(func() {
 		_ = container.Stop(context.Background())
@@ -81,7 +82,7 @@ func newInstance(t *testing.T) instance {
 }
 
 // backUp writes a backup of the database into a file, and returns its path.
-func backUp(t *testing.T, container *eventsourcingdb.Container) string {
+func backUp(t *testing.T, container *eventsourcingdbtest.Container) string {
 	t.Helper()
 
 	baseURL, err := container.GetBaseURL(t.Context())

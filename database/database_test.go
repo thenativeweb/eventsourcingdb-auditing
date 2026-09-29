@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
 	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdbtest"
 )
 
 // esdbBackup holds events with the hashes EventSourcingDB has computed for
@@ -107,10 +108,10 @@ func TestReadBackup(t *testing.T) {
 
 // newDatabase starts a real EventSourcingDB for a single test, and writes
 // events into it whose data needs escaping in JSON.
-func newDatabase(t *testing.T) (*eventsourcingdb.Container, *eventsourcingdb.Client) {
+func newDatabase(t *testing.T) (*eventsourcingdbtest.Container, *eventsourcingdb.Client) {
 	t.Helper()
 
-	container := eventsourcingdb.NewContainer()
+	container := eventsourcingdbtest.NewContainer()
 	require.NoError(t, container.Start(t.Context()))
 	t.Cleanup(func() {
 		_ = container.Stop(context.Background())
