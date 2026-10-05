@@ -141,7 +141,7 @@ func TestReadAnchors(t *testing.T) {
 func TestListAnchors(t *testing.T) {
 	t.Run("reads the public chain of anchors without a token", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			assert.Equal(t, http.MethodGet, request.Method)
+			assert.Equal(t, "QUERY", request.Method)
 			assert.Equal(t, audit.ListAnchorsPath, request.URL.Path)
 			assert.Empty(t, request.Header.Get("Authorization"))
 			assert.False(t, request.URL.Query().Has(audit.AnchorsAfterParameter))

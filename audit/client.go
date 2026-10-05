@@ -80,7 +80,7 @@ func (c *Client) ReadAnchors(ctx context.Context, after time.Time) (ReadAnchorsR
 // ListAnchors reads the public chain of anchors after the given hour, at most
 // MaxAnchorsPerResponse of them. A zero hour reads from the start.
 func (c *Client) ListAnchors(ctx context.Context, after time.Time) (ListAnchorsResponseBodyPayload, error) {
-	return read[ListAnchorsResponseBodyPayload](ctx, c, http.MethodGet, ListAnchorsPath, anchorsAfter(after), ListAnchorsResponseType)
+	return read[ListAnchorsResponseBodyPayload](ctx, c, methodQuery, ListAnchorsPath, anchorsAfter(after), ListAnchorsResponseType)
 }
 
 func anchorsAfter(after time.Time) url.Values {

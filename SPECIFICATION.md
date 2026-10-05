@@ -271,7 +271,7 @@ Every answer is a JSON object with a `type` and a `payload`. The reads of the au
 
 `QUERY /api/v1/audit/read-anchors?after=<hour>` answers with the type `io.thenativeweb.custody.anchors-with-proofs`, and the payload `{"anchors": […], "signingKeyCertificates": […]}`: at most 100 anchors after the given hour, in RFC 3339, or from the start without it. Every anchor has the members `anchor`, the anchor as a JWS, `timestampToken`, its time stamp token in base64, and `proof`, the proof of the instance as in [section 5.3](#53-proofs), or no `proof` if the instance sent nothing in that hour.
 
-`GET /api/v1/anchors?after=<hour>` answers the same way without a token, with the type `io.thenativeweb.custody.anchors`, and anchors without proofs. It is the public chain of anchors, which keeps the custodian from showing different anchors to different parties.
+`QUERY /api/v1/anchors?after=<hour>` answers the same way without a token, with the type `io.thenativeweb.custody.anchors`, and anchors without proofs. It is the public chain of anchors, which keeps the custodian from showing different anchors to different parties.
 
 ## 9. The receipts directory
 
