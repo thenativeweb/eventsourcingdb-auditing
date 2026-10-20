@@ -125,7 +125,7 @@ func newDatabase(t *testing.T) (*eventsourcingdbtest.Container, *eventsourcingdb
 		{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-borrowed", Data: map[string]any{"reader": "Jürgen \"J\" O'Neil"}},
 		{Source: "https://example.com", Subject: "/readers/23", Type: "io.example.reader-registered", Data: map[string]any{"name": "阿部"}},
 	}
-	_, err = client.WriteEvents(candidates, nil)
+	_, err = client.WriteEvents(t.Context(), candidates, nil)
 	require.NoError(t, err)
 
 	return container, client
