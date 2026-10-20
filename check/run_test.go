@@ -56,7 +56,7 @@ func newInstance(t *testing.T) instance {
 	require.NoError(t, err)
 
 	for _, title := range []string{"2001", "<Ümlauts & Émojis 🎉>", "Dune"} {
-		_, err := client.WriteEvents([]eventsourcingdb.EventCandidate{{
+		_, err := client.WriteEvents(t.Context(), []eventsourcingdb.EventCandidate{{
 			Source: "https://example.com", Subject: "/books", Type: "io.example.book-acquired", Data: map[string]any{"title": title},
 		}}, nil)
 		require.NoError(t, err)
