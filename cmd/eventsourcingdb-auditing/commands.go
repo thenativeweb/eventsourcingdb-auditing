@@ -55,7 +55,7 @@ func newVerifyCommand(stdout io.Writer, exitCode *int) *cobra.Command {
 		serverURL         string
 		auditorToken      string
 		rootPublicKey     string
-		backupPath        string
+		backupPaths       []string
 		esdbURL           string
 		esdbAPIToken      string
 		receiptsDirectory string
@@ -69,8 +69,15 @@ func newVerifyCommand(stdout io.Writer, exitCode *int) *cobra.Command {
 		Use:   "verify",
 		Short: "Verifies an instance",
 		Long: `Verifies an instance: what the custodian has recorded about it, its events,
-either from a backup or from the running database, and, if given, the receipts
+either from backups or from the running database, and, if given, the receipts
 its client has kept.
+
+Backups are read in either format, as EventSourcingDB writes them on
+/api/v1/backup and on /api/v2/management/create-backup. Give --backup once for
+every backup of a chain, a full backup and the incremental ones that follow on
+it, in any order: they are ordered by the events they follow on, and checked as
+one. A file may also hold several backups in the format of create-backup one
+after another, as EventSourcingDB restores them.
 
 The time stamps of the anchors are checked against the EU trusted lists, which
 are fetched from where they are published, or read from a directory that
@@ -86,7 +93,7 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 				return errors.New("--auditor-token is required")
 			case rootPublicKey == "":
 				return errors.New("--root-public-key is required")
-			case (backupPath == "") == (esdbURL == ""):
+			case (len(backupPaths) == 0) == (esdbURL == ""):
 				return errors.New("either --backup or --esdb-url is required, but not both")
 			case esdbURL != "" && esdbAPIToken == "":
 				return errors.New("--esdb-api-token is required with --esdb-url")
@@ -109,7 +116,7 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 				ServerURL:         serverURL,
 				AuditorToken:      auditorToken,
 				RootPublicKey:     decodedRootPublicKey,
-				BackupPath:        backupPath,
+				BackupPaths:       backupPaths,
 				ReceiptsDirectory: receiptsDirectory,
 				ToolVersion:       Version,
 			}
@@ -169,7 +176,7 @@ only gaps in protection were found, and 3 if the verification could not be run.`
 	flags.StringVar(&serverURL, "server-url", serverURLDefault, "sets the URL of the custodian")
 	flags.StringVar(&auditorToken, "auditor-token", os.Getenv("AUDITOR_TOKEN"), "sets the auditor token the customer has granted")
 	flags.StringVar(&rootPublicKey, "root-public-key", os.Getenv("ROOT_PUBLIC_KEY"), "sets the root public key of the custodian, in base64url")
-	flags.StringVar(&backupPath, "backup", "", "sets the path of a backup of the database, as written on /api/v1/backup")
+	flags.StringArrayVar(&backupPaths, "backup", nil, "sets the path of a backup of the database, as written on /api/v1/backup or /api/v2/management/create-backup, once for every backup of a chain")
 	flags.StringVar(&esdbURL, "esdb-url", os.Getenv("ESDB_URL"), "sets the URL of the running database, instead of a backup")
 	flags.StringVar(&esdbAPIToken, "esdb-api-token", os.Getenv("ESDB_API_TOKEN"), "sets the API token of the running database")
 	flags.StringVar(&receiptsDirectory, "receipts-directory", "", "sets the receipts directory of the client, to check the custodian against it")

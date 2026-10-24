@@ -33,7 +33,32 @@ type EventsResult struct {
 // It only fails if the events can not be read, since then nothing can be said
 // about them.
 func VerifyEvents(events iter.Seq2[database.Event, error], custodian CustodianResult, now time.Time) (EventsResult, error) {
-	check := newEventsCheck(custodian, now)
+	return verifyEvents(events, nil, custodian, now)
+}
+
+// uncoveredSpan is a span of events, by their IDs, that none of the backups
+// of a chain holds. The event after it follows on the event that ends it,
+// with the hash that the backup after it names, unless the span is open, as
+// after an incomplete backup that no other backup reaches beyond, where it is
+// not known which events there are.
+type uncoveredSpan struct {
+	firstID, lastID uint64
+	lastHash        string
+	isOpen          bool
+}
+
+func (s uncoveredSpan) contains(eventID uint64) bool {
+	return eventID >= s.firstID && (s.isOpen || eventID <= s.lastID)
+}
+
+// verifyEvents checks events as VerifyEvents does, except that the events of
+// the given spans were not read, since none of the backups holds them. They
+// are neither missing, nor are the fingerprints of them, since whether they
+// match can not be told. Only the fingerprint of the event that ends a span is
+// compared with the hash the backup after it names, and the event after a span
+// has to follow on that hash. The spans must be ordered by their IDs.
+func verifyEvents(events iter.Seq2[database.Event, error], spans []uncoveredSpan, custodian CustodianResult, now time.Time) (EventsResult, error) {
+	check := newEventsCheck(custodian, now, spans)
 
 	for event, err := range events {
 		if err != nil {
@@ -70,6 +95,11 @@ type eventsCheck struct {
 	hasPrevious bool
 	previousID  uint64
 	previous    database.Event
+
+	// spans are the spans of events that none of the backups holds, and
+	// nextSpan is the first of them that no event has been read after yet.
+	spans    []uncoveredSpan
+	nextSpan int
 
 	// changed collects consecutive events whose content no longer hashes to
 	// their hash, so that they end up in one finding, and unknownVersion the
@@ -119,27 +149,43 @@ func (r *eventRange) isSingle() bool {
 	return r.firstID == r.lastID
 }
 
-func newEventsCheck(custodian CustodianResult, now time.Time) *eventsCheck {
+func newEventsCheck(custodian CustodianResult, now time.Time, spans []uncoveredSpan) *eventsCheck {
 	check := &eventsCheck{
 		custodian:       custodian,
 		now:             now,
+		spans:           spans,
 		confirmed:       map[string]ConfirmedFingerprint{},
 		confirmedBefore: map[string]ConfirmedFingerprint{},
 	}
 
+	spanEndsCompared := map[uint64]bool{}
 	for _, fingerprint := range custodian.Fingerprints {
+		eventID, err := strconv.ParseUint(fingerprint.EventID, 10, 64)
+		span, isInSpan := check.spanOf(eventID)
+		isInSpan = isInSpan && err == nil
+
 		if !fingerprint.IsAfterLatestReset {
-			if _, isKnown := check.confirmedBefore[fingerprint.EventID]; !isKnown {
+			if _, isKnown := check.confirmedBefore[fingerprint.EventID]; !isKnown && !isInSpan {
 				check.confirmedBefore[fingerprint.EventID] = fingerprint
 			}
 			continue
 		}
 
-		if _, isKnown := check.confirmed[fingerprint.EventID]; !isKnown {
+		// The event of a fingerprint in a span is in none of the backups,
+		// so it can not be compared, except for the event that ends a span,
+		// whose hash the backup after it names. A heartbeat repeats a
+		// fingerprint, which is compared only once.
+		if isInSpan {
+			if !span.isOpen && eventID == span.lastID && !spanEndsCompared[eventID] {
+				spanEndsCompared[eventID] = true
+				if fingerprint.EventHash != span.lastHash {
+					check.found.add(SeverityManipulation, CheckFingerprints, "Event %s has the hash %s, as the backup that follows on it names it, but the custodian confirmed the hash %s on %s", fingerprint.EventID, span.lastHash, fingerprint.EventHash, formatTime(fingerprint.ReceivedAt))
+				}
+			}
+		} else if _, isKnown := check.confirmed[fingerprint.EventID]; !isKnown {
 			check.confirmed[fingerprint.EventID] = fingerprint
 		}
 
-		eventID, err := strconv.ParseUint(fingerprint.EventID, 10, 64)
 		if err != nil {
 			check.found.add(SeverityManipulation, CheckFingerprints, "Receipt %d confirms event %q, which is no event ID", fingerprint.Sequence, fingerprint.EventID)
 			continue
@@ -162,8 +208,17 @@ func (c *eventsCheck) event(event database.Event) error {
 	}
 	c.lastAt = event.Time
 
+	// The events before and after a span that none of the backups holds do
+	// not follow each other, so what they share ends at the span.
+	span, isAfterSpan := c.spanBefore(eventID)
+	if isAfterSpan {
+		c.flushChanged()
+		c.flushUnknownVersion()
+		c.flushLate()
+	}
+
 	c.checkHash(event)
-	c.checkChain(event, eventID)
+	c.checkChain(event, eventID, span, isAfterSpan)
 	c.checkFingerprint(event)
 	c.checkProtection(event, eventID)
 
@@ -230,7 +285,49 @@ func (c *eventsCheck) flushUnknownVersion() {
 	c.unknownHashVersion = ""
 }
 
-func (c *eventsCheck) checkChain(event database.Event, eventID uint64) {
+// spanOf returns the span that holds the event with the given ID, if there is
+// one.
+func (c *eventsCheck) spanOf(eventID uint64) (uncoveredSpan, bool) {
+	for _, span := range c.spans {
+		if span.contains(eventID) {
+			return span, true
+		}
+	}
+
+	return uncoveredSpan{}, false
+}
+
+// spanBefore returns the span that lies between the event before the one with
+// the given ID and that one, if there is one. Of several spans that lie next
+// to each other, it returns the last one, which the event follows on.
+func (c *eventsCheck) spanBefore(eventID uint64) (uncoveredSpan, bool) {
+	var before uncoveredSpan
+	isBefore := false
+	for c.nextSpan < len(c.spans) && !c.spans[c.nextSpan].isOpen && c.spans[c.nextSpan].lastID < eventID {
+		span := c.spans[c.nextSpan]
+		c.nextSpan++
+		if !c.hasPrevious || c.previousID < span.firstID {
+			before, isBefore = span, true
+		}
+	}
+
+	return before, isBefore
+}
+
+// checkChain checks that an event follows on the one before it. After a span
+// that none of the backups holds, the event follows on the event that ends
+// the span, with the hash that the backup after it names, since the events of
+// the span were not read, and the link across the span is part of the gap
+// that the span is. Whether the backup after the span lacks events right
+// after the one it follows on, it tells itself.
+func (c *eventsCheck) checkChain(event database.Event, eventID uint64, span uncoveredSpan, isAfterSpan bool) {
+	if isAfterSpan {
+		if event.PredecessorHash != span.lastHash {
+			c.found.add(SeverityManipulation, CheckEventChain, "Event %s does not follow event %d, which its backup follows on, since it names another predecessor hash", event.ID, span.lastID)
+		}
+		return
+	}
+
 	if !c.hasPrevious {
 		if eventID != 0 {
 			c.found.add(SeverityManipulation, CheckEventChain, "The database starts with event %s, so the events before it are missing", event.ID)

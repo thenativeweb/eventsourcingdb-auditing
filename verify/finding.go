@@ -15,7 +15,8 @@ const (
 
 	// SeverityGap means that events were not protected in the way the
 	// intervals of the instance promise, for example because the client was
-	// silent for longer than its heartbeat interval.
+	// silent for longer than its heartbeat interval, or that events could not
+	// be checked, for example because none of the backups holds them.
 	SeverityGap Severity = "gap"
 
 	// SeverityNotice is something an auditor should know, but that is
@@ -34,6 +35,7 @@ const (
 	CheckPublicAnchors   = "public-anchors"
 	CheckSilence         = "silence"
 	CheckAnchoring       = "anchoring"
+	CheckBackups         = "backups"
 	CheckEventHashes     = "event-hashes"
 	CheckEventChain      = "event-chain"
 	CheckFingerprints    = "fingerprints"

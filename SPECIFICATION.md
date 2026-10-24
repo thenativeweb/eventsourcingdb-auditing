@@ -51,7 +51,7 @@ The hash of an event is computed from its content as EventSourcingDB does. There
 - A hash that does not start with `esdb:hash:` is of **version 1**, and has no prefix.
 - A hash that starts with `esdb:hash:`, followed by anything other than `v2:`, is of a version that this specification does not know, which only a newer EventSourcingDB writes.
 
-Every event MUST be computed in the version its own hash names, and in no other. A hash of a version the verifier does not know MUST NOT be computed at all, and MUST NOT be taken for a hash that does not match ([section 10.2](#102-the-events)).
+Every event MUST be computed in the version its own hash names, and in no other. A hash of a version the verifier does not know MUST NOT be computed at all, and MUST NOT be taken for a hash that does not match ([section 10.3](#103-the-events)).
 
 The hash of **version 1** is computed as follows. It covers neither `traceparent` nor `tracestate`:
 
@@ -86,13 +86,33 @@ Every event carries the hash of the event before it as `predecessorhash`, exactl
 
 ### 3.3 Backups
 
-EventSourcingDB writes a backup on `POST /api/v1/backup` as newline-delimited JSON. Every line is an object with a `type` and a `payload`:
+EventSourcingDB writes backups in two formats, both as newline-delimited JSON, with one item per line. A verifier tells them apart by their first line that is not a heartbeat, as EventSourcingDB does when it restores a backup: a backup in the format of create-backup begins with an item of the type `backup`, and a backup of `/api/v1/backup` with a line that holds a `payload`. A file without a single line counts as a backup of `/api/v1/backup` of an empty database.
+
+**The format of `/api/v1/backup`**, which names no version, and counts as version 1. EventSourcingDB writes it on `POST /api/v1/backup`, which is deprecated from version 1.3 on, and goes away with version 2.0. Every line is an object with a `type` and a `payload`:
 
 - `event`: the payload is `{"event": {…}, "hash": "…"}`, the event as it was written, with the members `specversion`, `id`, `time`, `source`, `subject`, `type`, `datacontenttype`, `predecessorhash`, and `data`, and optionally `traceparent` and `tracestate`, which are part of a hash of version 2, but not of one of version 1. The hash is of the version the event was written with.
 - `schema` (or `eventType`): the schema of an event type, which is not part of the chain.
-- `error`: an error the database ran into while backing up. A backup with such a line is incomplete, and MUST NOT be verified.
+- `error`: an error the database ran into while backing up, as a string, after which it writes nothing more. A backup with such a line is incomplete: the events before the line are checked all the same ([section 10.2](#102-the-backups)). A line after it makes the backup unreadable.
 
-From version 1.3 on, EventSourcingDB also writes backups on `POST /api/v2/management/create-backup`, in another format, which this specification does not cover yet. Its first line has the type `backup`, which a backup of `/api/v1/backup` never has. `/api/v1/backup` is deprecated from version 1.3 on, and goes away with version 2.0.
+Such a backup always holds every event, so it counts as a **full backup** that ends at its last event. It has no item that ends it, so whether it was cut short between two lines can not be told from it. EventSourcingDB ends every line with a line feed, though, so if the last line is no JSON, and lacks the line feed, the backup was cut short in the middle of that line while it was transferred: that rest of a line is left aside, and the backup is incomplete, as with an `error` line. A line that is no JSON anywhere else, or that ends with a line feed, makes the backup unreadable.
+
+**The format of create-backup**, version 2. From version 1.3 on, EventSourcingDB writes backups on `POST /api/v2/management/create-backup`. The request is `{"lastBackedUpEvent": null}` for a **full backup**, which holds every event, or `{"lastBackedUpEvent": {"id": "…", "hash": "…"}}` for an **incremental backup**, which holds the events after the given one, which is the event the previous backup ended at. EventSourcingDB only begins an incremental backup if it still holds that event with that hash. Every line is an object with a `type` and `data`:
+
+| `type` | `data` |
+|---|---|
+| `backup` | the first item: `formatVersion`, the version of the format, which is `2`, and `lastBackedUpEvent`, the event the backup **follows on**, with `id` and `hash`, as the request named it, or `null` for a full backup |
+| `eventSchema` | the schema of an event type, with `type` and `schema`, which is not part of the chain. Every backup holds every schema |
+| `event` | an event, with the members `specversion`, `id`, `source`, `subject`, `type`, `time`, `predecessorhash`, `datacontenttype`, `data`, `traceparent`, `tracestate`, `hash`, and `signature`. A trace context the event does not have is `null`. The hash is of the version the event was written with. The signature is not part of the event: EventSourcingDB does not store it, but signs the hash whenever it hands out the event, with the key it has then, or not at all, and writes `null` then |
+| `heartbeat` | an empty object. It only kept the connection alive |
+| `lastBackedUpEvent` | the event the backup **ended at**, with `id` and `hash`, which the next incremental backup follows on: its last event, or, if it holds none, the event it follows on. A full backup of an empty database names none |
+| `error` | an error that kept the database from completing the backup, with `code`, `description`, and `details` |
+| `end` | an empty object, the last item |
+
+A backup in this format is **complete** if it ends with its `end` item, and holds no `error` item. EventSourcingDB writes the `end` item after an `error` item as well, and nothing in between, so the `end` item alone does not make a backup complete, and it writes the `lastBackedUpEvent` item only for a complete backup. A backup that is cut short lacks its `end` item. EventSourcingDB ends every line with a line feed, so if a backup was cut short while it was transferred, and its last line is no JSON, and lacks the line feed, that rest of a line is left aside. What EventSourcingDB answers when it refuses to begin a backup, for example because it no longer holds the event to follow on with that hash, consists of an `error` item and the `end` item only, and is no backup.
+
+A backup whose `formatVersion` is not `2`, compared as it is written, or that names none, is of a version that this specification does not know, and can not be read reliably.
+
+A file MAY hold several backups in this format one after another, as EventSourcingDB restores them in one stream: every further backup begins with its `backup` item right after the `end` item of the one before, and only heartbeats may lie between them. Every one of them names its own version, and counts as a backup of its own ([section 10.2](#102-the-backups)). Anything else after an `end` item, and a `backup` item before the `end` item of the backup before, makes the file unreadable. A backup of `/api/v1/backup` has no item that ends it, so a file in that format always holds a single one.
 
 ### 3.4 Fingerprints
 
@@ -314,10 +334,10 @@ Sorting the files by name sorts them by day.
 
 ## 10. Verification
 
-A verification reads the history of an instance from the custodian, the events of the database of the customer, from a backup or from the running database, and optionally the receipts directory of its client. It checks everything below, and reports every problem as a **finding**, rather than stopping at the first one. Every finding has a **severity**:
+A verification reads the history of an instance from the custodian, the events of the database of the customer, from one or more backups or from the running database, and optionally the receipts directory of its client. It checks everything below, and reports every problem as a **finding**, rather than stopping at the first one. Every finding has a **severity**:
 
 - **Manipulation**: data has been changed, or the custodian contradicts itself, its signatures, or the public chain of anchors. The conflicts and continuity breaks the custodian has recorded count as manipulations as well, since a reset of the baseline only explains them.
-- **Gap**: events were not protected the way the intervals promise, or are protected by hashes the verifier can not check.
+- **Gap**: events were not protected the way the intervals promise, or could not be checked, since none of the backups holds them, or a backup is incomplete, or since they are protected by hashes the verifier can not check.
 - **Notice**: something the auditor should know, for example a reset of the baseline and its reason, or a time stamp that is not qualified.
 
 ### 10.1 The custodian
@@ -332,30 +352,45 @@ A verification reads the history of an instance from the custodian, the events o
 8. The time between two receipts, and between the latest receipt and the time of the verification, MUST NOT exceed the heartbeat interval valid at the time plus one minute. The time while the instance is locked, from a conflict or a break to the next reset, does not count. A violation is a gap.
 9. A receipt whose hour ended more than two hours before the time of the verification MUST be covered by an anchor. A violation is a gap.
 
-### 10.2 The events
+### 10.2 The backups
+
+A verification MAY read the events from several backups, of either format ([section 3.3](#33-backups)): a full backup and incremental backups that follow on it, or several full ones, which together form a **chain**. A file that holds several backups one after another adds every one of them to the chain as a backup of its own, which findings name by the file and its number within it, as in "chain.ndjson, part 2". It checks them as follows, and then checks their events as if they came from a single backup ([section 10.3](#103-the-events)).
+
+1. A backup that can not be read, or that names a version of its format the verifier does not know, can not be read reliably, and the verification MUST NOT go on. The same holds for a file that holds no backup.
+2. The backups are ordered by the events they follow on, whatever order they are given in: full backups first, then the incremental ones, by the ID of the event they follow on. Among backups that follow on the same event, or among full ones, the ones that end earlier come first, and among those that end at the same event, the order goes by the paths they are given with, then by their numbers within their files, and then by their SHA-256, so that it never depends on the order they are given in. A backup of `/api/v1/backup` counts as a full backup that ends at its last event, so incremental backups in the format of create-backup may follow on it.
+3. A backup MUST hold every event from the one after the event it follows on, or from event `0` for a full backup, up to the one it ends at. An event it lacks in between has been removed from it, which is a manipulation that names the backup and the events, even if another backup holds them.
+4. A backup ends at its last event, or, if it holds none, at the event it follows on. Along the order, the chain **reaches** the furthest event that the backups so far end at. An incremental backup that follows on an event after the one the chain reaches leaves the events from the one after that up to and including the event it follows on in none of the backups, and so does an incremental backup before which the chain reaches no event, from event `0` on. Such a span is a gap that names it exactly, for example "Events 0 to 4711 are in none of the backups, so they could not be checked", where a chain starts with an incremental backup that follows on event `4711`.
+5. An incremental backup that follows on an event that a backup holds MUST name it with the hash that backup holds it with. Normally, it follows on the last event of the backup before, where the two meet. A different hash is a manipulation. Backups that follow on the same event, which none of the backups holds, MUST name it with the same hash, or else it is a manipulation.
+6. Backups MAY overlap. An event that several backups hold MUST be the same in all of them: in every member that a hash of either version covers, and in its hash. The signature is left out, since it differs between backups taken before and after the key of the database changed ([section 3.3](#33-backups)). A trace context that a backup leaves out counts as the same as one that is `null`, and the data is compared byte for byte. If the event is the same, it counts once. If not, it is a manipulation that names both backups.
+7. A backup that is not complete may lack events after the last one it holds: a backup in the format of create-backup that lacks its `end` item, holds an `error` item, or ends in the middle of a line, and a backup of `/api/v1/backup` that holds an `error` line, or ends in the middle of a line. Its events are checked all the same. If a complete backup ends at the furthest event any backup of the chain ends at, and complete backups hold every event from the one after the last one the incomplete backup holds, or from event `0` if it holds none and follows on none, up to that furthest event, by where they start and where they end, then the incompleteness leaves no event unchecked, and is a notice that names the backup. Otherwise, it is a gap that names the backup.
+8. A backup in the format of create-backup that names another event as the one it ended at than the one it ended at has been changed, which is a manipulation.
+
+When the events are checked then, the events of a span that none of the backups holds were not read. They are not missing, and the fingerprints of them are not compared, except for the fingerprint of the event that ends the span, whose hash the backup after the span names. The first event after a span MUST follow on that event: its ID MUST be the ID of that event plus one, and its predecessor hash MUST be the hash the backup names, or else it is a manipulation. The link from the event before the span to the event after it is part of the gap. If no complete backup reaches as far as an incomplete one, the events after the last one it holds are not known either, and the fingerprints of them are not compared.
+
+### 10.3 The events
 
 1. Every event MUST still hash to its hash, computed in the version its hash names ([section 3.1](#31-the-hash-of-an-event)). A violation is a manipulation. An event whose hash is of a version the verifier does not know can not be checked. It MUST NOT be reported as a manipulation, but as a gap that names the version, since whether it has been changed can not be told.
 2. The events MUST form one chain ([section 3.2](#32-the-chain-of-events)). Every missing event, and every event that names another predecessor hash, is a manipulation.
-3. Every event the custodian has confirmed since the latest reset of the baseline MUST be in the database with the confirmed hash. A different hash, and a confirmed event that is missing, is a manipulation. A difference to a fingerprint from before the latest reset is a notice.
+3. Every event the custodian has confirmed since the latest reset of the baseline MUST be in the database with the confirmed hash, or in the backups, except where none of them holds it ([section 10.2](#102-the-backups)). A different hash, and a confirmed event that is missing, is a manipulation. A difference to a fingerprint from before the latest reset is a notice.
 4. An event is **protected** once a receipt covers it, that is, a receipt for it or for an event after it. The time from when an event was written until the first receipt after the latest reset that covers it MUST NOT exceed the minimum interval valid at the time plus one minute. Events written before the latest reset are left out. A violation is a gap, as is an event no receipt covers yet, once it is older than allowed.
 
-### 10.3 The receipts directory
+### 10.4 The receipts directory
 
 If the receipts directory of the client is given, every receipt and every anchor in it that verifies MUST be held by the custodian identically: every receipt under its `sequence` in the chain, and every anchor, with its time stamp and its proof, under its hour. A receipt or an anchor the custodian no longer holds, or holds differently, is a manipulation. One that does not verify can not be held against the custodian, and is a notice.
 
-### 10.4 The trusted lists
+### 10.5 The trusted lists
 
 Every time stamp of an anchor that verifies SHOULD be checked against the EU trusted lists ([section 6.1](#61-qualified-time-stamps)). A time stamp that is not qualified is a notice. A verification that does not check the trusted lists MUST say so.
 
-### 10.5 The result
+### 10.6 The result
 
-The result of a verification is **manipulation** if there is at least one manipulation, **gaps** if there is at least one gap but no manipulation, and **no findings** otherwise. Notices do not change the result. The report of a verification SHOULD name what was checked: the instance, the custodian, the SHA-256 of the backup or the database, the receipts directory, and the state of the trusted lists, that is, when the list of the lists was issued.
+The result of a verification is **manipulation** if there is at least one manipulation, **gaps** if there is at least one gap but no manipulation, and **no findings** otherwise. Notices do not change the result. The report of a verification SHOULD name what was checked: the instance, the custodian, every file of backups with its SHA-256, in the order of the chain, together with the backups it holds, if it holds several, or the database, the receipts directory, and the state of the trusted lists, that is, when the list of the lists was issued.
 
 The tool in this repository ends with the exit code `0` for no findings, `1` for a manipulation, `2` for gaps, and `3` if the verification could not be run.
 
 ## 11. Test vectors
 
-[`testvectors/testvectors.json`](testvectors/testvectors.json) holds test vectors for this specification. The tests in [`testvectors`](testvectors) check that the code in this repository produces exactly them, and that they verify, so that the specification and the code can not drift apart. The vectors are built from fixed seeds, and Ed25519 signatures are deterministic, so they never change unless a format does. The hashes of events are the ones EventSourcingDB has computed, taken from real backups.
+[`testvectors/testvectors.json`](testvectors/testvectors.json) holds test vectors for this specification. The tests in [`testvectors`](testvectors) check that the code in this repository produces exactly them, and that they verify, so that the specification and the code can not drift apart. The vectors are built from fixed seeds, and Ed25519 signatures are deterministic, so they never change unless a format does. The hashes of events are the ones EventSourcingDB has computed, taken from real backups, as are the backups of the chain.
 
 | Member | Content |
 |---|---|
@@ -367,3 +402,4 @@ The tool in this repository ends with the exit code `0` for no findings, `1` for
 | `eventHashes` | five lines of a backup of EventSourcingDB, with the hashes of version 1 EventSourcingDB has computed for their events |
 | `eventHashesOfVersion2` | four lines of a backup of EventSourcingDB 1.3, with the hashes of version 2 it has computed for their events, which have a whole trace context, a `traceparent` only, or none, and data with nested objects, unicode, escapes, and numbers |
 | `eventHashesOfBothVersions` | four lines of a backup of EventSourcingDB 1.3: two events that EventSourcingDB 1.2 wrote, with hashes of version 1, restored into 1.3, and two events that 1.3 wrote after them, with hashes of version 2 |
+| `backupChain` | a chain of three backups in the format of create-backup, which a real EventSourcingDB 1.3 wrote, as lines: a full backup and two incremental ones, each with the event it follows on, which is the one the backup before it ended at, and the event it ended at |

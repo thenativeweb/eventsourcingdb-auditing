@@ -158,6 +158,43 @@ func TestVerify(t *testing.T) {
 		assert.Contains(t, []int{report.ExitCodeNoFindings, report.ExitCodeGaps}, exitCode, "the client may have been silent since the backup was taken")
 	})
 
+	t.Run("reads every backup given with --backup, as one chain, and names every one", func(t *testing.T) {
+		_, custodian := newBackup(t, databasetest.LaterFullBackup, "")
+		directory := t.TempDir()
+		var paths []string
+		for name, backup := range map[string]string{
+			"full.ndjson":          databasetest.FullBackup,
+			"incremental-1.ndjson": databasetest.FirstIncrementalBackup,
+			"incremental-2.ndjson": databasetest.SecondIncrementalBackup,
+		} {
+			path := filepath.Join(directory, name)
+			require.NoError(t, os.WriteFile(path, []byte(backup), 0o600))
+			paths = append(paths, path)
+		}
+
+		args := verifyArgs(t, custodian, paths[0], "--backup", paths[1], "--backup", paths[2])
+		exitCode, stdout, stderr := runWith(args...)
+
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "Backups             "+filepath.Join(directory, "full.ndjson")+"\n")
+		assert.Contains(t, stdout, "                    "+filepath.Join(directory, "incremental-1.ndjson")+"\n")
+		assert.Contains(t, stdout, "                    "+filepath.Join(directory, "incremental-2.ndjson")+"\n")
+		assert.Contains(t, stdout, "Events              10")
+		assert.Contains(t, stdout, "(0 manipulations, ")
+		assert.Contains(t, []int{report.ExitCodeNoFindings, report.ExitCodeGaps}, exitCode, "the client may have been silent since the backups were taken")
+	})
+
+	t.Run("ends with the exit code for a failure on a backup that names a version of its format it does not know, and names it", func(t *testing.T) {
+		unknown := strings.Replace(databasetest.FirstIncrementalBackup, `"formatVersion":2`, `"formatVersion":3`, 1)
+		backupPath, custodian := newBackup(t, databasetest.LaterFullBackup, unknown)
+
+		exitCode, stdout, stderr := runWith(verifyArgs(t, custodian, backupPath)...)
+
+		assert.Equal(t, report.ExitCodeFailure, exitCode)
+		assert.Empty(t, stdout)
+		assert.Contains(t, stderr, "failed to read the backup "+backupPath+": line 1 of the backup: unknown version of the format of the backup: the backup names version 3")
+	})
+
 	t.Run("ends with the exit code for a manipulation if an event with a hash of version 2 was changed", func(t *testing.T) {
 		changed := strings.Replace(databasetest.BackupWithHashesOfBothVersions, `"tracestate":"vendor=value"`, `"tracestate":"vendor=other"`, 1)
 		backupPath, custodian := newBackup(t, databasetest.BackupWithHashesOfBothVersions, changed)

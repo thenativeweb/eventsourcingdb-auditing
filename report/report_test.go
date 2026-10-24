@@ -23,7 +23,7 @@ func newReport(findings ...verify.Finding) report.Report {
 		Instance:    report.Instance{ID: "instance-1", Name: "production", RegisteredAt: tenOClock},
 		Sources: report.Sources{
 			Custodian: "https://custodian.example.com",
-			Backup:    &report.Backup{Path: "backup.json", SHA256: "abc"},
+			Backups:   []report.Backup{{Path: "backup.json", SHA256: "abc"}},
 		},
 		Events:   report.Events{Count: 42, FirstAt: &tenOClock, LastAt: &lastAt},
 		Receipts: 7,
@@ -72,7 +72,7 @@ func TestWriteText(t *testing.T) {
 		text := out.String()
 		assert.Contains(t, text, "eventsourcingdb-auditing 1.2.3, checked at 2026-09-01T12:00:00Z")
 		assert.Contains(t, text, "production (instance-1)")
-		assert.Contains(t, text, "SHA-256 abc")
+		assert.Contains(t, text, "Backup              backup.json\n                    SHA-256 abc\n")
 		assert.Contains(t, text, "Events              42, written from 2026-09-01T10:00:00Z to 2026-09-01T11:00:00Z")
 		assert.Contains(t, text, "Receipts directory  not given")
 		assert.Contains(t, text, "Trusted lists       not checked")
@@ -82,9 +82,59 @@ func TestWriteText(t *testing.T) {
 		assert.NotContains(t, text, "Notices")
 	})
 
+	t.Run("names every backup of a chain, with its SHA-256", func(t *testing.T) {
+		built := newReport()
+		built.Sources.Backups = []report.Backup{
+			{Path: "full.ndjson", SHA256: "abc"},
+			{Path: "incremental-1.ndjson", SHA256: "def"},
+			{Path: "incremental-2.ndjson", SHA256: "ghi"},
+		}
+
+		var out bytes.Buffer
+		require.NoError(t, report.WriteText(&out, built))
+
+		assert.Contains(t, out.String(), "Backups             full.ndjson\n"+
+			"                    SHA-256 abc\n"+
+			"                    incremental-1.ndjson\n"+
+			"                    SHA-256 def\n"+
+			"                    incremental-2.ndjson\n"+
+			"                    SHA-256 ghi\n"+
+			"Events              42")
+	})
+
+	t.Run("names a file that holds several backups once, with every backup it holds", func(t *testing.T) {
+		built := newReport()
+		built.Sources.Backups = []report.Backup{{
+			Path:   "chain.ndjson",
+			SHA256: "abc",
+			Parts: []report.BackupPart{
+				{Number: 1, EndedAt: "3"},
+				{Number: 2, FollowsOn: "3", EndedAt: "6"},
+				{Number: 3, FollowsOn: "6", EndedAt: "6"},
+				{Number: 4},
+			},
+		}}
+
+		var out bytes.Buffer
+		require.NoError(t, report.WriteText(&out, built))
+
+		assert.Contains(t, out.String(), "Backups             chain.ndjson\n"+
+			"                    SHA-256 abc\n"+
+			"                    part 1, full, ended at event 3\n"+
+			"                    part 2, follows on event 3, ended at event 6\n"+
+			"                    part 3, follows on event 6, without events\n"+
+			"                    part 4, full, without events\n"+
+			"Events              42")
+
+		out.Reset()
+		require.NoError(t, report.WriteJSON(&out, built))
+		assert.Contains(t, out.String(), `"parts": [`)
+		assert.Contains(t, out.String(), `"followsOn": "3"`)
+	})
+
 	t.Run("names a database and a receipts directory", func(t *testing.T) {
 		built := newReport()
-		built.Sources.Backup = nil
+		built.Sources.Backups = nil
 		built.Sources.Database = "http://localhost:3000"
 		built.Sources.ReceiptsDirectory = "/receipts"
 		built.ReceiptsDirectoryChecked = true
@@ -111,7 +161,8 @@ func TestWriteJSON(t *testing.T) {
 		var decoded report.Report
 		require.NoError(t, json.Unmarshal(out.Bytes(), &decoded))
 		assert.Equal(t, report.ResultGaps, decoded.Result)
-		assert.Equal(t, "abc", decoded.Sources.Backup.SHA256)
+		require.Len(t, decoded.Sources.Backups, 1)
+		assert.Equal(t, "abc", decoded.Sources.Backups[0].SHA256)
 		assert.Len(t, decoded.Findings, 1)
 	})
 }

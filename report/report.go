@@ -62,19 +62,33 @@ type Instance struct {
 	RegisteredAt time.Time `json:"registeredAt"`
 }
 
-// Sources name where the verification read from.
+// Sources name where the verification read from. Backups are named in the
+// order of their chain: full backups first, then the incremental ones, by the
+// events they follow on.
 type Sources struct {
-	Custodian         string  `json:"custodian"`
-	Backup            *Backup `json:"backup,omitempty"`
-	Database          string  `json:"database,omitempty"`
-	ReceiptsDirectory string  `json:"receiptsDirectory,omitempty"`
+	Custodian         string   `json:"custodian"`
+	Backups           []Backup `json:"backups,omitempty"`
+	Database          string   `json:"database,omitempty"`
+	ReceiptsDirectory string   `json:"receiptsDirectory,omitempty"`
 }
 
-// Backup names a backup, and its SHA-256, so that it is clear which one was
-// checked.
+// Backup names a file of backups, and its SHA-256, so that it is clear which
+// one was checked, together with the backups it holds one after another, if
+// it holds more than one.
 type Backup struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path   string       `json:"path"`
+	SHA256 string       `json:"sha256"`
+	Parts  []BackupPart `json:"parts,omitempty"`
+}
+
+// BackupPart is one of several backups that a file holds, by its number
+// within the file, from 1 on, with the ID of the event it follows on, which
+// is empty for a full backup, and the ID of the event it ended at, which is
+// empty for a full backup without events.
+type BackupPart struct {
+	Number    int    `json:"number"`
+	FollowsOn string `json:"followsOn,omitempty"`
+	EndedAt   string `json:"endedAt,omitempty"`
 }
 
 type Events struct {

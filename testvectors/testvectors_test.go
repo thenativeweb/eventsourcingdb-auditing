@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"slices"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/merkle"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt"
+	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify/verifytest"
 )
 
@@ -37,6 +39,8 @@ type Vectors struct {
 
 	EventHashesOfVersion2     []EventHash `json:"eventHashesOfVersion2"`
 	EventHashesOfBothVersions []EventHash `json:"eventHashesOfBothVersions"`
+
+	BackupChain []BackupOfAChain `json:"backupChain"`
 }
 
 type Key struct {
@@ -91,6 +95,15 @@ type SignedAnchor struct {
 type EventHash struct {
 	BackupLine string `json:"backupLine"`
 	Hash       string `json:"hash"`
+}
+
+// BackupOfAChain is a backup in the format of create-backup, as one of a
+// chain, with the event it follows on, or none for a full backup, and the
+// event it ended at.
+type BackupOfAChain struct {
+	Lines     []string                 `json:"lines"`
+	FollowsOn *database.EventReference `json:"followsOn"`
+	EndedAt   *database.EventReference `json:"endedAt"`
 }
 
 func seed(value byte) []byte {
@@ -233,7 +246,44 @@ func generate(t *testing.T) Vectors {
 	vectors.EventHashesOfVersion2 = eventHashesOf(t, databasetest.BackupWithHashesOfVersion2)
 	vectors.EventHashesOfBothVersions = eventHashesOf(t, databasetest.BackupWithHashesOfBothVersions)
 
+	// A chain of backups in the format of create-backup, which
+	// EventSourcingDB writes from version 1.3 on: a full backup, and two
+	// incremental ones, each of which follows on the event the one before it
+	// ended at.
+	for _, backup := range []string{databasetest.FullBackup, databasetest.FirstIncrementalBackup, databasetest.SecondIncrementalBackup} {
+		vectors.BackupChain = append(vectors.BackupChain, backupOfAChain(t, backup))
+	}
+
 	return vectors
+}
+
+// nopCloser is a backup in memory, which needs no closing.
+type nopCloser struct {
+	io.ReadSeeker
+}
+
+func (nopCloser) Close() error {
+	return nil
+}
+
+// backupOfAChain takes the lines of a backup, together with the event it
+// follows on, and the event it ended at.
+func backupOfAChain(t *testing.T, backup string) BackupOfAChain {
+	t.Helper()
+
+	reader := database.NewBackupReader(strings.NewReader(backup))
+	for _, err := range reader.Events() {
+		require.NoError(t, err)
+	}
+	require.Len(t, reader.Backups(), 1)
+	read := reader.Backups()[0]
+	require.True(t, read.IsComplete)
+
+	return BackupOfAChain{
+		Lines:     strings.Split(strings.TrimSpace(backup), "\n"),
+		FollowsOn: read.FollowsOn,
+		EndedAt:   read.EndedAt(),
+	}
 }
 
 // eventHashesOf takes the lines of a backup, together with the hashes
@@ -379,6 +429,39 @@ func TestVectors(t *testing.T) {
 				}
 				assert.Equal(t, len(test.versions), i)
 			})
+		}
+	})
+
+	t.Run("have backups that form a chain, with events that hash to their hashes", func(t *testing.T) {
+		require.Len(t, vectors.BackupChain, 3)
+		assert.Nil(t, vectors.BackupChain[0].FollowsOn)
+
+		var sources []verify.BackupSource
+		for i, backup := range vectors.BackupChain {
+			if i > 0 {
+				assert.Equal(t, vectors.BackupChain[i-1].EndedAt, backup.FollowsOn)
+			}
+
+			content := strings.Join(backup.Lines, "\n") + "\n"
+			for event, err := range database.ReadBackup(strings.NewReader(content)) {
+				require.NoError(t, err)
+				assert.True(t, event.HashMatches, "event %s", event.ID)
+			}
+
+			sources = append(sources, verify.BackupSource{
+				Name: strconv.Itoa(i),
+				Open: func() (io.ReadSeekCloser, error) {
+					return nopCloser{strings.NewReader(content)}, nil
+				},
+			})
+		}
+
+		result, err := verify.VerifyBackups(sources, verify.CustodianResult{}, time.Now())
+		require.NoError(t, err)
+		assert.Equal(t, 10, result.EventCount)
+		for _, finding := range result.Findings {
+			assert.NotEqual(t, verify.SeverityManipulation, finding.Severity, finding.Message)
+			assert.NotEqual(t, verify.CheckBackups, finding.Check, finding.Message)
 		}
 	})
 }

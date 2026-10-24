@@ -189,5 +189,64 @@
       "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/23\",\"type\":\"io.eventsourcingdb.library.reader-moved\",\"specversion\":\"1.0\",\"id\":\"3\",\"time\":\"2026-10-24T09:10:53.861434262Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"esdb:hash:v2:9e69606a3e764f70bb065d725c760510bc346eb02092e66d66ca3c6e3b35a16f\",\"data\":{\"address\":{\"city\":\"Zürich\",\"geo\":{\"lat\":47.3769,\"lon\":8.5417}},\"empty\":{},\"list\":[1,2,{\"x\":null}],\"name\":\"阿部 🎉\"}},\"hash\":\"esdb:hash:v2:9a16a9774e6d1c220d0a98cfd35947b05c1a590d8208ab54e349c06de6c3c83d\"}}",
       "hash": "esdb:hash:v2:9a16a9774e6d1c220d0a98cfd35947b05c1a590d8208ab54e349c06de6c3c83d"
     }
+  ],
+  "backupChain": [
+    {
+      "lines": [
+        "{\"type\":\"backup\",\"data\":{\"formatVersion\":2,\"lastBackedUpEvent\":null}}",
+        "{\"type\":\"eventSchema\",\"data\":{\"type\":\"io.eventsourcingdb.library.book-acquired\",\"schema\":{\"properties\":{\"title\":{\"type\":\"string\"}},\"required\":[\"title\"],\"type\":\"object\"}}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"0\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-acquired\",\"time\":\"2026-10-24T10:47:28.0448745Z\",\"predecessorhash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"datacontenttype\":\"application/json\",\"data\":{\"author\":{\"born\":1917,\"name\":\"Arthur C. Clarke\"},\"note\":\"\\u003ca \\u0026 b\\u003e \\\"quoted\\\"\",\"price\":9.99,\"tags\":[\"sci-fi\",\"классика\"],\"title\":\"2001 – A Space Odyssey\"},\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\",\"tracestate\":\"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE\",\"hash\":\"esdb:hash:v2:0671aa801c5d6813f0d49f97ee3872e0fed1a47206505c3c8a334aa6ce41bf7b\",\"signature\":\"esdb:signature:v1:2aa8f7155822aa1eb5f73df34f2a3bd21fe596e4c454ef94085af0ce06aa781d540b09e4c6876fe78bee888fb6654e8a8603a9ed7ab1ae9163b1074c0e05300c\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"1\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/23\",\"type\":\"io.eventsourcingdb.library.reader-registered\",\"time\":\"2026-10-24T10:47:28.0448745Z\",\"predecessorhash\":\"esdb:hash:v2:0671aa801c5d6813f0d49f97ee3872e0fed1a47206505c3c8a334aa6ce41bf7b\",\"datacontenttype\":\"application/json\",\"data\":{\"address\":{\"city\":\"Zürich\",\"geo\":{\"lat\":47.3769,\"lon\":8.5417}},\"empty\":{},\"list\":[1,2,{\"x\":null}],\"name\":\"阿部 🎉\"},\"traceparent\":null,\"tracestate\":null,\"hash\":\"esdb:hash:v2:1f4cfb30c3a8f794a76aaeeeba53e7351a9f6794ec8be545bd06c56a879ef813\",\"signature\":\"esdb:signature:v1:7277fc81d6b90c671e346da3207e5004fe6db9237293f189111859a044abea363e25d53b076ab2b573cabbc5390d6787b57336571c4f224d19ec862c95044d0c\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"2\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-borrowed\",\"time\":\"2026-10-24T10:47:28.0448745Z\",\"predecessorhash\":\"esdb:hash:v2:1f4cfb30c3a8f794a76aaeeeba53e7351a9f6794ec8be545bd06c56a879ef813\",\"datacontenttype\":\"application/json\",\"data\":{\"borrowedBy\":\"/readers/23\",\"copies\":9007199254740993,\"due\":{\"date\":\"2026-11-07\",\"reminders\":[{\"days\":3},{\"days\":1}]},\"huge\":1e+21,\"negative\":-42,\"ratio\":0.1,\"tiny\":1e-7,\"whole\":1},\"traceparent\":\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\",\"tracestate\":null,\"hash\":\"esdb:hash:v2:41bf50082d68c6ecabc615294031fb7afa61de93168f895f1433f721db19df67\",\"signature\":\"esdb:signature:v1:c84b2a73ca1a045689c02de0e0cf571394f9d7d39fb6211eff8bdd079a13cd078bd72afbc24ba53287ba332cdb309bd28015a49f87f9edd322d782ea7514fe02\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"3\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-returned\",\"time\":\"2026-10-24T10:47:28.0448745Z\",\"predecessorhash\":\"esdb:hash:v2:41bf50082d68c6ecabc615294031fb7afa61de93168f895f1433f721db19df67\",\"datacontenttype\":\"application/json\",\"data\":{\"returnedBy\":\"/readers/23\"},\"traceparent\":null,\"tracestate\":null,\"hash\":\"esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0\",\"signature\":\"esdb:signature:v1:9133f5a2ef0c7df7567d1169d298b7c9b1dec9a976d920ecd64c07b0dccb8bbfb82e2e7265b39c4ebd137f0c638bfc65b3813048800322bbae198ff3ec7a840d\"}}",
+        "{\"type\":\"lastBackedUpEvent\",\"data\":{\"id\":\"3\",\"hash\":\"esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0\"}}",
+        "{\"type\":\"end\",\"data\":{}}"
+      ],
+      "followsOn": null,
+      "endedAt": {
+        "id": "3",
+        "hash": "esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0"
+      }
+    },
+    {
+      "lines": [
+        "{\"type\":\"backup\",\"data\":{\"formatVersion\":2,\"lastBackedUpEvent\":{\"id\":\"3\",\"hash\":\"esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0\"}}}",
+        "{\"type\":\"eventSchema\",\"data\":{\"type\":\"io.eventsourcingdb.library.book-acquired\",\"schema\":{\"properties\":{\"title\":{\"type\":\"string\"}},\"required\":[\"title\"],\"type\":\"object\"}}}",
+        "{\"type\":\"eventSchema\",\"data\":{\"type\":\"io.eventsourcingdb.library.reader-moved\",\"schema\":{\"properties\":{\"to\":{\"type\":\"string\"}},\"type\":\"object\"}}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"4\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/23\",\"type\":\"io.eventsourcingdb.library.reader-moved\",\"time\":\"2026-10-24T10:47:29.344332417Z\",\"predecessorhash\":\"esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0\",\"datacontenttype\":\"application/json\",\"data\":{\"floors\":[0,-1,2.5],\"from\":\"Zürich\",\"since\":\"2026-10-24\",\"to\":\"Kraków\"},\"traceparent\":\"00-11111111111111111111111111111111-2222222222222222-01\",\"tracestate\":\"vendor=value\",\"hash\":\"esdb:hash:v2:8d26a3337cb5871ff2d198487802a453f37282eff37ef44720d74eded146d0f0\",\"signature\":\"esdb:signature:v1:ac3d20ba403e121de450f41afbab9aba1842860190c3ed580a78a4fb5828a08696a22409411b12291a3fc9010b0b27fafaa96da0dc973ccf87bd049791d85d03\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"5\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/23\",\"type\":\"io.eventsourcingdb.library.book-acquired\",\"time\":\"2026-10-24T10:47:29.344332417Z\",\"predecessorhash\":\"esdb:hash:v2:8d26a3337cb5871ff2d198487802a453f37282eff37ef44720d74eded146d0f0\",\"datacontenttype\":\"application/json\",\"data\":{\"author\":{\"name\":\"Philip K. Dick\"},\"copies\":3,\"newline\":\"line 1\\nline 2\",\"tabs\":\"a\\tb\",\"title\":\"Ubik\"},\"traceparent\":null,\"tracestate\":null,\"hash\":\"esdb:hash:v2:acdf6fb8dcafdaf0e5057efa779a82aa6c697732fcd8050205a9d7f266b2a818\",\"signature\":\"esdb:signature:v1:65d8e0a7133b56edeb704b76622265b872123ac99c7499e05b180ee6fac175b4f13a192e50e8a2fe3c90d8744d10c63d754d51d47b98caa5a275f3f6d35dbf0b\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"6\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/23\",\"type\":\"io.eventsourcingdb.library.book-borrowed\",\"time\":\"2026-10-24T10:47:29.344332417Z\",\"predecessorhash\":\"esdb:hash:v2:acdf6fb8dcafdaf0e5057efa779a82aa6c697732fcd8050205a9d7f266b2a818\",\"datacontenttype\":\"application/json\",\"data\":{\"borrowedBy\":\"/readers/23\",\"emoji\":\"📚\",\"escaped\":\"é́\",\"nothing\":null,\"yes\":true},\"traceparent\":\"00-33333333333333333333333333333333-4444444444444444-00\",\"tracestate\":null,\"hash\":\"esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19\",\"signature\":\"esdb:signature:v1:9a84f942efcfb1b28027da633d97a74cbd6ce8f15fdacc35e69e2fe339136185403671db50daf422bcc492025d71379804188e92d6ecec7288527c198f4cc80d\"}}",
+        "{\"type\":\"lastBackedUpEvent\",\"data\":{\"id\":\"6\",\"hash\":\"esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19\"}}",
+        "{\"type\":\"end\",\"data\":{}}"
+      ],
+      "followsOn": {
+        "id": "3",
+        "hash": "esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0"
+      },
+      "endedAt": {
+        "id": "6",
+        "hash": "esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19"
+      }
+    },
+    {
+      "lines": [
+        "{\"type\":\"backup\",\"data\":{\"formatVersion\":2,\"lastBackedUpEvent\":{\"id\":\"6\",\"hash\":\"esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19\"}}}",
+        "{\"type\":\"eventSchema\",\"data\":{\"type\":\"io.eventsourcingdb.library.book-acquired\",\"schema\":{\"properties\":{\"title\":{\"type\":\"string\"}},\"required\":[\"title\"],\"type\":\"object\"}}}",
+        "{\"type\":\"eventSchema\",\"data\":{\"type\":\"io.eventsourcingdb.library.reader-moved\",\"schema\":{\"properties\":{\"to\":{\"type\":\"string\"}},\"type\":\"object\"}}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"7\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/23\",\"type\":\"io.eventsourcingdb.library.book-returned\",\"time\":\"2026-10-24T10:47:30.648206793Z\",\"predecessorhash\":\"esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19\",\"datacontenttype\":\"application/json\",\"data\":{\"fee\":{\"amount\":1.5,\"currency\":\"EUR\"},\"late\":false,\"returnedBy\":\"/readers/23\"},\"traceparent\":null,\"tracestate\":null,\"hash\":\"esdb:hash:v2:97aa2b2f61e3ea41971434c5cb958ee4cfcd5f5aa8bc6c66de0c1c743c7c9d33\",\"signature\":\"esdb:signature:v1:f53d8cc30cefb2d40c8dc18226e0e0b5abb74386e33ae39f36951726079ea9781ca844099c20cadb09fcebb6484d913e89bff9c59225ef91aac4bfb6777b9003\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"8\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/42\",\"type\":\"io.eventsourcingdb.library.reader-registered\",\"time\":\"2026-10-24T10:47:30.648206793Z\",\"predecessorhash\":\"esdb:hash:v2:97aa2b2f61e3ea41971434c5cb958ee4cfcd5f5aa8bc6c66de0c1c743c7c9d33\",\"datacontenttype\":\"application/json\",\"data\":{\"address\":{\"city\":\"Αθήνα\"},\"ids\":[1000,12345678901234567890],\"name\":\"Ελένη\"},\"traceparent\":\"00-55555555555555555555555555555555-6666666666666666-01\",\"tracestate\":\"a=1,b=2\",\"hash\":\"esdb:hash:v2:41a7f4377d83301fe50c16ca3fbb239d0b0c3fb64b8569f970feb30dde4633fd\",\"signature\":\"esdb:signature:v1:dc76eb876fd9572638001a62a748c84353c12663575613132ef90eb066380b516bbf22f2a0eea813a8361f585380659ae362db5e9b5d74dc6582cfe85029dc0a\"}}",
+        "{\"type\":\"event\",\"data\":{\"specversion\":\"1.0\",\"id\":\"9\",\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-borrowed\",\"time\":\"2026-10-24T10:47:30.648206793Z\",\"predecessorhash\":\"esdb:hash:v2:41a7f4377d83301fe50c16ca3fbb239d0b0c3fb64b8569f970feb30dde4633fd\",\"datacontenttype\":\"application/json\",\"data\":{\"borrowedBy\":\"/readers/42\",\"copies\":1},\"traceparent\":null,\"tracestate\":null,\"hash\":\"esdb:hash:v2:bf4523f9089a79334d2d48d62a60e68aa56888c93307d74ac7cb8eb52ac16575\",\"signature\":\"esdb:signature:v1:6e6fa223e0a0699acb502350b704e0cec02eafaf31e2782a7382c45dbfab5ec4c0a73b410d4841ddb717fa682d12f0c5a7801c01d4833eda19cdc2ce9d65010d\"}}",
+        "{\"type\":\"lastBackedUpEvent\",\"data\":{\"id\":\"9\",\"hash\":\"esdb:hash:v2:bf4523f9089a79334d2d48d62a60e68aa56888c93307d74ac7cb8eb52ac16575\"}}",
+        "{\"type\":\"end\",\"data\":{}}"
+      ],
+      "followsOn": {
+        "id": "6",
+        "hash": "esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19"
+      },
+      "endedAt": {
+        "id": "9",
+        "hash": "esdb:hash:v2:bf4523f9089a79334d2d48d62a60e68aa56888c93307d74ac7cb8eb52ac16575"
+      }
+    }
   ]
 }

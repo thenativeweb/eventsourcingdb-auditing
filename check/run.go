@@ -3,8 +3,6 @@ package check
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -30,9 +28,12 @@ type Options struct {
 	// RootPublicKey is the key that certifies the keys of the custodian.
 	RootPublicKey ed25519.PublicKey
 
-	// Either BackupPath names a backup of the database of the customer, or
-	// Database and DatabaseURL name the running database.
-	BackupPath  string
+	// Either BackupPaths name the files of backups of the database of the
+	// customer, of either format, a full backup and incremental ones that
+	// follow on it, or several full ones, in any order, where a file may
+	// hold several backups in the format of create-backup one after another,
+	// or Database and DatabaseURL name the running database.
+	BackupPaths []string
 	Database    *eventsourcingdb.Client
 	DatabaseURL string
 
@@ -60,7 +61,7 @@ type TrustedLists interface {
 // Run runs a verification, and returns its report. It only fails if something
 // can not be read or checked at all, in which case nothing can be said.
 func Run(ctx context.Context, options Options) (report.Report, error) {
-	if (options.BackupPath == "") == (options.Database == nil) {
+	if (len(options.BackupPaths) == 0) == (options.Database == nil) {
 		return report.Report{}, errors.New("either a backup or a database must be given, not both and not none")
 	}
 
@@ -215,36 +216,101 @@ func hourOf(anchorJWS string) (time.Time, error) {
 	return anchor.Hour, nil
 }
 
-// verifyEvents reads the events from the backup or the database, and checks
-// them. For a backup, it computes its SHA-256 on the way, so that the report
-// names exactly which backup was checked.
-func verifyEvents(ctx context.Context, options Options, custodianResult verify.CustodianResult, now time.Time, sources *report.Sources) (verify.EventsResult, error) {
+// verifyEvents reads the events from the backups or the database, and checks
+// them. For backups, it names every one of them with its SHA-256, in the
+// order of the chain, so that the report names exactly which backups were
+// checked.
+func verifyEvents(ctx context.Context, options Options, custodianResult verify.CustodianResult, now time.Time, sources *report.Sources) (result verify.EventsResult, err error) {
 	if options.Database != nil {
 		sources.Database = options.DatabaseURL
 		return verify.VerifyEvents(database.ReadDatabase(ctx, options.Database), custodianResult, now)
 	}
 
-	backup, err := os.Open(options.BackupPath)
-	if err != nil {
-		return verify.EventsResult{}, fmt.Errorf("failed to open the backup: %w", err)
+	var copies []string
+	defer func() {
+		for _, copied := range copies {
+			removeErr := os.Remove(copied)
+			if removeErr != nil && err == nil {
+				err = fmt.Errorf("failed to remove the copy of a backup: %w", removeErr)
+			}
+		}
+	}()
+
+	backups := make([]verify.BackupSource, 0, len(options.BackupPaths))
+	for _, path := range options.BackupPaths {
+		readPath, isCopy, err := readablePathOf(path)
+		if isCopy {
+			copies = append(copies, readPath)
+		}
+		if err != nil {
+			return verify.EventsResult{}, err
+		}
+
+		backups = append(backups, verify.BackupSource{
+			Name: path,
+			Open: func() (io.ReadSeekCloser, error) {
+				return os.Open(readPath)
+			},
+		})
 	}
-	defer backup.Close()
 
-	hasher := sha256.New()
-
-	result, err := verify.VerifyEvents(database.ReadBackup(io.TeeReader(backup, hasher)), custodianResult, now)
+	backupsResult, err := verify.VerifyBackups(backups, custodianResult, now)
 	if err != nil {
 		return verify.EventsResult{}, err
 	}
 
-	// Reading the events stops at the end of the last line, so whatever
-	// follows it counts for the hash as well.
-	_, err = io.Copy(hasher, backup)
-	if err != nil {
-		return verify.EventsResult{}, fmt.Errorf("failed to read the backup: %w", err)
+	for _, backup := range backupsResult.Backups {
+		named := report.Backup{Path: backup.Name, SHA256: backup.SHA256}
+		for _, part := range backup.Parts {
+			described := report.BackupPart{Number: part.Number}
+			if part.FollowsOn != nil {
+				described.FollowsOn = part.FollowsOn.ID
+			}
+			if part.EndedAt != nil {
+				described.EndedAt = part.EndedAt.ID
+			}
+			named.Parts = append(named.Parts, described)
+		}
+		sources.Backups = append(sources.Backups, named)
 	}
 
-	sources.Backup = &report.Backup{Path: options.BackupPath, SHA256: hex.EncodeToString(hasher.Sum(nil))}
+	return backupsResult.EventsResult, nil
+}
 
-	return result, nil
+// readablePathOf returns the path that a backup can be read from twice, as
+// checking a chain of backups does: the path itself for a regular file, and
+// for anything else, such as a pipe or a process substitution, which can be
+// read only once, a copy in the directory for temporary files, which the
+// caller removes, as it tells. The SHA-256 of the copy is the one of the bytes
+// read from the path.
+func readablePathOf(path string) (string, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to open the backup %s: %w", path, err)
+	}
+	if info.Mode().IsRegular() {
+		return path, false, nil
+	}
+
+	source, err := os.Open(path)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to open the backup %s: %w", path, err)
+	}
+	defer source.Close()
+
+	copied, err := os.CreateTemp("", "eventsourcingdb-auditing-backup-*.ndjson")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to copy the backup %s, which is no regular file: %w", path, err)
+	}
+
+	_, err = io.Copy(copied, source)
+	closeErr := copied.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return copied.Name(), true, fmt.Errorf("failed to copy the backup %s, which is no regular file: %w", path, err)
+	}
+
+	return copied.Name(), true, nil
 }
