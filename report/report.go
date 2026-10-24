@@ -62,12 +62,14 @@ type Instance struct {
 	RegisteredAt time.Time `json:"registeredAt"`
 }
 
-// Sources name where the verification read from.
+// Sources name where the verification read from. Backups are named in the
+// order of their chain: full backups first, then the incremental ones, by the
+// events they follow on.
 type Sources struct {
-	Custodian         string  `json:"custodian"`
-	Backup            *Backup `json:"backup,omitempty"`
-	Database          string  `json:"database,omitempty"`
-	ReceiptsDirectory string  `json:"receiptsDirectory,omitempty"`
+	Custodian         string   `json:"custodian"`
+	Backups           []Backup `json:"backups,omitempty"`
+	Database          string   `json:"database,omitempty"`
+	ReceiptsDirectory string   `json:"receiptsDirectory,omitempty"`
 }
 
 // Backup names a backup, and its SHA-256, so that it is clear which one was

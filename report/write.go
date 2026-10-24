@@ -28,8 +28,19 @@ func WriteText(out io.Writer, report Report) error {
 	fmt.Fprintf(&text, "Instance            %s (%s), registered at %s\n", report.Instance.Name, report.Instance.ID, formatTime(report.Instance.RegisteredAt))
 	fmt.Fprintf(&text, "Custodian           %s\n", report.Sources.Custodian)
 	switch {
-	case report.Sources.Backup != nil:
-		fmt.Fprintf(&text, "Backup              %s\n                    SHA-256 %s\n", report.Sources.Backup.Path, report.Sources.Backup.SHA256)
+	case len(report.Sources.Backups) > 0:
+		label := "Backup "
+		if len(report.Sources.Backups) > 1 {
+			label = "Backups"
+		}
+		for i, backup := range report.Sources.Backups {
+			if i == 0 {
+				fmt.Fprintf(&text, "%s             %s\n", label, backup.Path)
+			} else {
+				fmt.Fprintf(&text, "                    %s\n", backup.Path)
+			}
+			fmt.Fprintf(&text, "                    SHA-256 %s\n", backup.SHA256)
+		}
 	case report.Sources.Database != "":
 		fmt.Fprintf(&text, "Database            %s\n", report.Sources.Database)
 	}

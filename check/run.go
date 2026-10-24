@@ -3,8 +3,6 @@ package check
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -30,9 +28,11 @@ type Options struct {
 	// RootPublicKey is the key that certifies the keys of the custodian.
 	RootPublicKey ed25519.PublicKey
 
-	// Either BackupPath names a backup of the database of the customer, or
-	// Database and DatabaseURL name the running database.
-	BackupPath  string
+	// Either BackupPaths name the backups of the database of the customer,
+	// of either format, a full backup and incremental ones that follow on
+	// it, or several full ones, in any order, or Database and DatabaseURL
+	// name the running database.
+	BackupPaths []string
 	Database    *eventsourcingdb.Client
 	DatabaseURL string
 
@@ -60,7 +60,7 @@ type TrustedLists interface {
 // Run runs a verification, and returns its report. It only fails if something
 // can not be read or checked at all, in which case nothing can be said.
 func Run(ctx context.Context, options Options) (report.Report, error) {
-	if (options.BackupPath == "") == (options.Database == nil) {
+	if (len(options.BackupPaths) == 0) == (options.Database == nil) {
 		return report.Report{}, errors.New("either a backup or a database must be given, not both and not none")
 	}
 
@@ -215,36 +215,34 @@ func hourOf(anchorJWS string) (time.Time, error) {
 	return anchor.Hour, nil
 }
 
-// verifyEvents reads the events from the backup or the database, and checks
-// them. For a backup, it computes its SHA-256 on the way, so that the report
-// names exactly which backup was checked.
+// verifyEvents reads the events from the backups or the database, and checks
+// them. For backups, it names every one of them with its SHA-256, in the
+// order of the chain, so that the report names exactly which backups were
+// checked.
 func verifyEvents(ctx context.Context, options Options, custodianResult verify.CustodianResult, now time.Time, sources *report.Sources) (verify.EventsResult, error) {
 	if options.Database != nil {
 		sources.Database = options.DatabaseURL
 		return verify.VerifyEvents(database.ReadDatabase(ctx, options.Database), custodianResult, now)
 	}
 
-	backup, err := os.Open(options.BackupPath)
-	if err != nil {
-		return verify.EventsResult{}, fmt.Errorf("failed to open the backup: %w", err)
+	backups := make([]verify.BackupSource, 0, len(options.BackupPaths))
+	for _, path := range options.BackupPaths {
+		backups = append(backups, verify.BackupSource{
+			Name: path,
+			Open: func() (io.ReadCloser, error) {
+				return os.Open(path)
+			},
+		})
 	}
-	defer backup.Close()
 
-	hasher := sha256.New()
-
-	result, err := verify.VerifyEvents(database.ReadBackup(io.TeeReader(backup, hasher)), custodianResult, now)
+	result, err := verify.VerifyBackups(backups, custodianResult, now)
 	if err != nil {
 		return verify.EventsResult{}, err
 	}
 
-	// Reading the events stops at the end of the last line, so whatever
-	// follows it counts for the hash as well.
-	_, err = io.Copy(hasher, backup)
-	if err != nil {
-		return verify.EventsResult{}, fmt.Errorf("failed to read the backup: %w", err)
+	for _, backup := range result.Backups {
+		sources.Backups = append(sources.Backups, report.Backup{Path: backup.Name, SHA256: backup.SHA256})
 	}
 
-	sources.Backup = &report.Backup{Path: options.BackupPath, SHA256: hex.EncodeToString(hasher.Sum(nil))}
-
-	return result, nil
+	return result.EventsResult, nil
 }

@@ -2,8 +2,11 @@ package database_test
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -199,12 +202,37 @@ func TestReadBackup(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses a backup in the format of the v2 API, which it does not read", func(t *testing.T) {
-		backup := `{"type":"backup","data":{"formatVersion":2,"lastBackedUpEvent":null}}` + "\n"
+	t.Run("computes the same hashes as EventSourcingDB 1.3 for a backup in the format of create-backup", func(t *testing.T) {
+		events, err := readAll(t, database.ReadBackup(strings.NewReader(databasetest.LaterFullBackup)))
 
-		_, err := readAll(t, database.ReadBackup(strings.NewReader(backup)))
+		require.NoError(t, err)
+		require.Len(t, events, 10)
+		for i, event := range events {
+			assert.Equal(t, fmt.Sprint(i), event.ID)
+			assert.True(t, event.HashMatches, "event %s", event.ID)
+			assert.Equal(t, database.HashVersion2, event.HashVersion)
+		}
 
-		assert.ErrorContains(t, err, "line 1 of the backup: the backup is in the format of /api/v2/management/create-backup")
+		assert.Equal(t, database.GenesisHash, events[0].PredecessorHash)
+		assert.Equal(t, events[3].Hash, events[4].PredecessorHash)
+	})
+
+	t.Run("reads the same events from both formats", func(t *testing.T) {
+		ofVersion1, err := readAll(t, database.ReadBackup(strings.NewReader(databasetest.FullBackupOfAPIVersion1)))
+		require.NoError(t, err)
+		ofVersion2, err := readAll(t, database.ReadBackup(strings.NewReader(databasetest.FullBackup)))
+		require.NoError(t, err)
+
+		assert.Equal(t, ofVersion1, ofVersion2)
+	})
+
+	t.Run("fails at the end of a backup in the format of create-backup that is incomplete", func(t *testing.T) {
+		withoutEnd := strings.TrimSuffix(databasetest.FullBackup, `{"type":"end","data":{}}`+"\n")
+
+		events, err := readAll(t, database.ReadBackup(strings.NewReader(withoutEnd)))
+
+		assert.ErrorContains(t, err, "the backup is incomplete, since it lacks its end item")
+		assert.Len(t, events, 4)
 	})
 
 	t.Run("skips empty lines and the schemas of event types", func(t *testing.T) {
@@ -239,6 +267,305 @@ func TestReadBackup(t *testing.T) {
 	})
 }
 
+// backedUpEventsOf reads the events of a backup with a BackupReader, and
+// returns them together with what the backup tells about itself.
+func backedUpEventsOf(t *testing.T, backup string) ([]database.BackedUpEvent, database.Backup, error) {
+	t.Helper()
+
+	reader := database.NewBackupReader(strings.NewReader(backup))
+	var events []database.BackedUpEvent
+	for event, err := range reader.Events() {
+		if err != nil {
+			return events, reader.Backup(), err
+		}
+		events = append(events, event)
+	}
+
+	return events, reader.Backup(), nil
+}
+
+// withoutLines removes the lines of a backup from the given index on, up to
+// the given one, excluding it, or to the end for -1.
+func withoutLines(backup string, from, to int) string {
+	lines := strings.SplitAfter(backup, "\n")
+	if to < 0 {
+		to = len(lines)
+	}
+
+	return strings.Join(slices.Delete(lines, from, to), "")
+}
+
+func TestBackupReader(t *testing.T) {
+	t.Run("tells the format of a backup, the event it follows on, and the event it ended at", func(t *testing.T) {
+		reference := func(id, hash string) *database.EventReference {
+			return &database.EventReference{ID: id, Hash: hash}
+		}
+		event3 := reference("3", "esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0")
+		event6 := reference("6", "esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19")
+		event9 := reference("9", "esdb:hash:v2:bf4523f9089a79334d2d48d62a60e68aa56888c93307d74ac7cb8eb52ac16575")
+
+		for _, test := range []struct {
+			name                           string
+			backup                         string
+			formatVersion                  int
+			events                         int
+			followsOn, lastEvent, namedEnd *database.EventReference
+			endedAt                        *database.EventReference
+		}{
+			{"a full backup", databasetest.FullBackup, database.BackupFormatVersion2, 4, nil, event3, event3, event3},
+			{"a backup of /api/v1/backup", databasetest.FullBackupOfAPIVersion1, database.BackupFormatVersion1, 4, nil, event3, nil, event3},
+			{"an incremental backup", databasetest.FirstIncrementalBackup, database.BackupFormatVersion2, 3, event3, event6, event6, event6},
+			{"another incremental backup", databasetest.SecondIncrementalBackup, database.BackupFormatVersion2, 3, event6, event9, event9, event9},
+			{"an incremental backup without events", databasetest.IncrementalBackupWithoutEvents, database.BackupFormatVersion2, 0, event9, nil, event9, event9},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				events, backup, err := backedUpEventsOf(t, test.backup)
+
+				require.NoError(t, err)
+				require.Len(t, events, test.events)
+				for _, event := range events {
+					assert.True(t, event.HashMatches, "event %s", event.ID)
+				}
+				assert.Equal(t, test.formatVersion, backup.FormatVersion)
+				assert.Equal(t, test.followsOn, backup.FollowsOn)
+				assert.Equal(t, test.lastEvent, backup.LastEvent)
+				assert.Equal(t, test.namedEnd, backup.NamedEnd)
+				assert.Equal(t, test.endedAt, backup.EndedAt())
+				assert.True(t, backup.IsComplete)
+				assert.Empty(t, backup.Failure)
+			})
+		}
+	})
+
+	t.Run("takes a backup in the format of create-backup that lacks its end item for incomplete, and still reads its events", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			backup string
+			events int
+		}{
+			{"without its end item", withoutLines(databasetest.SecondIncrementalBackup, 7, -1), 3},
+			{"cut short after its first event", withoutLines(databasetest.SecondIncrementalBackup, 4, -1), 1},
+			{"cut short before its first event", withoutLines(databasetest.SecondIncrementalBackup, 3, -1), 0},
+			{"cut short in the middle of a line", databasetest.SecondIncrementalBackup[:strings.Index(databasetest.SecondIncrementalBackup, `"id":"8"`)], 1},
+			{"cut short in the middle of its end item", strings.TrimSuffix(databasetest.SecondIncrementalBackup, `":{}}`+"\n"), 3},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				events, backup, err := backedUpEventsOf(t, test.backup)
+
+				require.NoError(t, err)
+				assert.Len(t, events, test.events)
+				assert.False(t, backup.IsComplete)
+				assert.Empty(t, backup.Failure)
+				assert.Equal(t, "6", backup.FollowsOn.ID)
+			})
+		}
+	})
+
+	t.Run("takes a backup in the format of create-backup with an error for incomplete, even with its end item, and tells the error", func(t *testing.T) {
+		errorLine := strings.SplitAfter(databasetest.RefusedBackup, "\n")[0]
+		lines := strings.SplitAfter(databasetest.SecondIncrementalBackup, "\n")
+		withError := strings.Join(slices.Concat(lines[:5], []string{errorLine, `{"type":"end","data":{}}` + "\n"}), "")
+
+		events, backup, err := backedUpEventsOf(t, withError)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 2)
+		assert.False(t, backup.IsComplete)
+		assert.Equal(t, "last backed up event is mismatched: the event with its ID has another hash, so the events changed since the previous backup", backup.Failure)
+		assert.Nil(t, backup.NamedEnd)
+	})
+
+	t.Run("skips heartbeats and the schemas of event types", func(t *testing.T) {
+		heartbeat := `{"type":"heartbeat","data":{}}` + "\n"
+		lines := strings.SplitAfter(databasetest.FirstIncrementalBackup, "\n")
+		withHeartbeats := heartbeat + strings.Join(slices.Concat(lines[:4], []string{heartbeat}, lines[4:6], []string{heartbeat, heartbeat}, lines[6:]), "")
+
+		events, backup, err := backedUpEventsOf(t, withHeartbeats)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 3)
+		assert.Equal(t, database.BackupFormatVersion2, backup.FormatVersion)
+		assert.True(t, backup.IsComplete)
+	})
+
+	t.Run("tells an event in the format of create-backup that has been changed in any field its hash covers", func(t *testing.T) {
+		for _, change := range []struct {
+			name     string
+			index    int
+			old, new string
+		}{
+			{"time", 3, `"time":"2026-10-24T10:47:29.`, `"time":"2026-10-24T10:47:30.`},
+			{"data", 4, `"title":"Ubik"`, `"title":"Valis"`},
+			{"traceparent", 3, `"traceparent":"00-11111111111111111111111111111111-`, `"traceparent":"00-11111111111111111111111111111112-`},
+			{"traceparent that was null", 4, `"traceparent":null`, `"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"`},
+			{"tracestate", 3, `"tracestate":"vendor=value"`, `"tracestate":"vendor=other"`},
+			{"removed tracestate", 3, `"tracestate":"vendor=value"`, `"tracestate":null`},
+			{"predecessor hash", 5, `"predecessorhash":"esdb:hash:v2:`, `"predecessorhash":"esdb:hash:v3:`},
+		} {
+			t.Run(change.name, func(t *testing.T) {
+				changed := changeEvent(t, databasetest.FirstIncrementalBackup, change.index, change.old, change.new)
+
+				events, _, err := backedUpEventsOf(t, changed)
+
+				require.NoError(t, err)
+				require.Len(t, events, 3)
+				for i, event := range events {
+					assert.Equal(t, i+3 != change.index, event.HashMatches, "event %s", event.ID)
+				}
+			})
+		}
+	})
+
+	t.Run("does not cover the signature with the hash", func(t *testing.T) {
+		changed := changeEvent(t, databasetest.FirstIncrementalBackup, 3, `"signature":"esdb:signature:v1:`, `"signature":"esdb:signature:v1:00`)
+
+		events, _, err := backedUpEventsOf(t, changed)
+
+		require.NoError(t, err)
+		assert.True(t, events[0].HashMatches)
+	})
+
+	t.Run("fails on a backup that names a version of its format it does not know", func(t *testing.T) {
+		for _, formatVersion := range []string{`"formatVersion":3`, `"formatVersion":1`, `"formatVersion":2.0`, `"formatVersion":20`} {
+			t.Run(formatVersion, func(t *testing.T) {
+				changed := strings.Replace(databasetest.FirstIncrementalBackup, `"formatVersion":2`, formatVersion, 1)
+
+				events, _, err := backedUpEventsOf(t, changed)
+
+				require.ErrorIs(t, err, database.ErrUnknownBackupFormat)
+				assert.ErrorContains(t, err, "line 1 of the backup")
+				assert.Empty(t, events)
+			})
+		}
+
+		for _, formatVersion := range []string{``, `"formatVersion":null,`} {
+			t.Run("none, as in "+formatVersion, func(t *testing.T) {
+				changed := strings.Replace(databasetest.FirstIncrementalBackup, `"formatVersion":2,`, formatVersion, 1)
+
+				_, _, err := backedUpEventsOf(t, changed)
+
+				require.ErrorIs(t, err, database.ErrUnknownBackupFormat)
+				assert.ErrorContains(t, err, "names no version")
+			})
+		}
+	})
+
+	t.Run("fails on a line that is no JSON, unless it is the rest of a line that a backup in the format of create-backup ends with", func(t *testing.T) {
+		cut := databasetest.SecondIncrementalBackup[:strings.Index(databasetest.SecondIncrementalBackup, `"id":"8"`)]
+
+		for _, test := range []struct {
+			name, backup, message string
+		}{
+			{"a line in the middle", strings.Replace(databasetest.SecondIncrementalBackup, `{"type":"event","data":{"specversion":"1.0","id":"8"`, `{"type":"event","data":{"specversion":"1.0","id":"8"}`+"\n", 1), "line 5 of the backup"},
+			{"a last line that ends with a line feed", cut + "\n", "line 5 of the backup"},
+			{"a last line after the end item", databasetest.SecondIncrementalBackup + `{"type":"event"`, "line 9 of the backup"},
+			{"a last line of a backup of /api/v1/backup", databasetest.FullBackupOfAPIVersion1[:strings.Index(databasetest.FullBackupOfAPIVersion1, `"id":"3"`)], "line 5 of the backup"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, _, err := backedUpEventsOf(t, test.backup)
+
+				assert.ErrorContains(t, err, test.message)
+			})
+		}
+	})
+
+	t.Run("fails on a file that holds no backup, but the error the database answered with instead", func(t *testing.T) {
+		_, _, err := backedUpEventsOf(t, databasetest.RefusedBackup)
+
+		assert.ErrorContains(t, err, "line 1 of the backup: the file holds no backup, but the error the database answered with instead: last backed up event is mismatched")
+	})
+
+	t.Run("fails on a file that holds a further backup after the end of the first one", func(t *testing.T) {
+		_, _, err := backedUpEventsOf(t, databasetest.FullBackup+databasetest.FirstIncrementalBackup)
+
+		assert.ErrorContains(t, err, "line 9 of the backup: the file holds a further backup after the end of the first one, so give every backup as a file of its own")
+	})
+
+	t.Run("fails on items where the format of create-backup puts none", func(t *testing.T) {
+		lines := strings.SplitAfter(databasetest.FirstIncrementalBackup, "\n")
+
+		for _, test := range []struct {
+			name, backup, message string
+		}{
+			{"an event after the end item", databasetest.FirstIncrementalBackup + lines[3], `line 9 of the backup: the backup holds an item of type "event" after its end item`},
+			{"a second backup item", strings.Join(slices.Concat(lines[:4], lines[:1], lines[4:]), ""), "line 5 of the backup: the backup holds a second backup item before its end item"},
+			{"an event before the backup item", strings.Join(slices.Concat(lines[3:4], lines), ""), `line 1 of the backup: expected a backup item to begin the backup, but got one of type "event"`},
+			{"an item of an unknown type", strings.Join(slices.Concat(lines[:3], []string{`{"type":"something-else","data":{}}` + "\n"}, lines[3:]), ""), `line 4 of the backup: unknown type "something-else"`},
+			{"an event without a hash", changeEvent(t, databasetest.FirstIncrementalBackup, 4, `"hash":"esdb:hash:v2:`, `"other":"esdb:hash:v2:`), "line 5 of the backup: the event has no ID or no hash"},
+			{"an event to follow on without a hash", strings.Replace(databasetest.FirstIncrementalBackup, `"lastBackedUpEvent":{"id":"3","hash"`, `"lastBackedUpEvent":{"id":"3","other"`, 1), "line 1 of the backup: the event the backup follows on is invalid"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, _, err := backedUpEventsOf(t, test.backup)
+
+				assert.ErrorContains(t, err, test.message)
+			})
+		}
+	})
+}
+
+func TestBackedUpEvent(t *testing.T) {
+	t.Run("finds no differences between the same events in both formats", func(t *testing.T) {
+		ofVersion1, _, err := backedUpEventsOf(t, databasetest.FullBackupOfAPIVersion1)
+		require.NoError(t, err)
+		ofVersion2, _, err := backedUpEventsOf(t, databasetest.FullBackup)
+		require.NoError(t, err)
+		later, _, err := backedUpEventsOf(t, databasetest.LaterFullBackup)
+		require.NoError(t, err)
+
+		for i := range ofVersion1 {
+			assert.Empty(t, ofVersion1[i].DifferencesFrom(ofVersion2[i]), "event %d", i)
+			assert.Empty(t, ofVersion2[i].DifferencesFrom(ofVersion1[i]), "event %d", i)
+			assert.Empty(t, ofVersion2[i].DifferencesFrom(later[i]), "event %d", i)
+		}
+	})
+
+	t.Run("names the members in which the same event differs", func(t *testing.T) {
+		for _, change := range []struct {
+			name         string
+			backup       string
+			line, event  int
+			old, new     string
+			differences  []string
+			stillMatches bool
+		}{
+			{"data", databasetest.FullBackup, 2, 0, `"title":"2001 – A Space Odyssey"`, `"title":"2010 – Odyssey Two"`, []string{"data"}, false},
+			{"subject and type", databasetest.FullBackup, 5, 3, `"subject":"/books/42","type":"io.eventsourcingdb.library.book-returned"`, `"subject":"/books/23","type":"io.eventsourcingdb.library.book-lost"`, []string{"subject", "type"}, false},
+			{"a removed trace context", databasetest.FullBackup, 2, 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE"`, `"traceparent":null,"tracestate":null`, []string{"traceparent", "tracestate"}, false},
+			{"a trace context that a hash of version 1 does not cover", databasetest.BackupWithHashesOfBothVersions, 0, 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-`, `"traceparent":"00-1af7651916cd43dd8448eb211c80319c-`, []string{"traceparent"}, true},
+			{"hash", databasetest.FullBackup, 5, 3, `"hash":"esdb:hash:v2:da03`, `"hash":"esdb:hash:v2:ea03`, []string{"hash"}, false},
+			{"signature", databasetest.FullBackup, 5, 3, `"signature":"esdb:signature:v1:9133`, `"signature":"esdb:signature:v1:0133`, []string{"signature"}, true},
+			{"a missing signature", databasetest.FullBackup, 5, 3, `"signature":"esdb:signature:v1:9133f5a2ef0c7df7567d1169d298b7c9b1dec9a976d920ecd64c07b0dccb8bbfb82e2e7265b39c4ebd137f0c638bfc65b3813048800322bbae198ff3ec7a840d"`, `"signature":null`, []string{"signature"}, true},
+		} {
+			t.Run(change.name, func(t *testing.T) {
+				original, _, err := backedUpEventsOf(t, change.backup)
+				require.NoError(t, err)
+				changed, _, err := backedUpEventsOf(t, changeEvent(t, change.backup, change.line, change.old, change.new))
+				require.NoError(t, err)
+
+				event := change.event
+				assert.Equal(t, change.differences, original[event].DifferencesFrom(changed[event]))
+				assert.Equal(t, change.stillMatches, changed[event].HashMatches, "whether the hash still matches")
+				for i := range original {
+					if i != event {
+						assert.Empty(t, original[i].DifferencesFrom(changed[i]), "event %d", i)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("does not compare the signature with a backup of /api/v1/backup, which holds none", func(t *testing.T) {
+		changed := changeEvent(t, databasetest.FullBackup, 5, `"signature":"esdb:signature:v1:9133`, `"signature":"esdb:signature:v1:0133`)
+
+		ofVersion1, _, err := backedUpEventsOf(t, databasetest.FullBackupOfAPIVersion1)
+		require.NoError(t, err)
+		ofVersion2, _, err := backedUpEventsOf(t, changed)
+		require.NoError(t, err)
+
+		assert.Empty(t, ofVersion1[3].DifferencesFrom(ofVersion2[3]))
+	})
+}
+
 // newDatabase starts a real EventSourcingDB for a single test, from the image
 // the environment names, and writes events into it whose data needs escaping
 // in JSON, with nested objects and numbers, and with and without a trace
@@ -258,6 +585,38 @@ func newDatabase(t *testing.T) (*eventsourcingdbtest.Container, *eventsourcingdb
 	require.NoError(t, err)
 
 	return container, client, written
+}
+
+// createBackup takes a backup of the database on
+// /api/v2/management/create-backup, following on the given event, or a full
+// one for nil. It skips the test on an EventSourcingDB that does not write
+// backups there yet, which 1.3 begins to.
+func createBackup(t *testing.T, container *eventsourcingdbtest.Container, followsOn *database.EventReference) []byte {
+	t.Helper()
+
+	baseURL, err := container.GetBaseURL(t.Context())
+	require.NoError(t, err)
+
+	body, err := json.Marshal(map[string]*database.EventReference{"lastBackedUpEvent": followsOn})
+	require.NoError(t, err)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL.JoinPath("/api/v2/management/create-backup").String(), bytes.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer "+container.GetAPIToken())
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		t.Skipf("EventSourcingDB %s does not write backups on /api/v2/management/create-backup, which version 1.3 introduces, so run the tests against preview", databasetest.ImageTag())
+	}
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	backup, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+
+	return backup
 }
 
 func TestReadDatabase(t *testing.T) {
@@ -310,4 +669,49 @@ func TestReadDatabase(t *testing.T) {
 			assert.True(t, live[i].Time.Equal(backedUp[i].Time))
 		}
 	})
+
+	t.Run("reads the same events from a full and an incremental backup in the format of create-backup", func(t *testing.T) {
+		container, client, _ := newDatabase(t)
+
+		full := database.NewBackupReader(bytes.NewReader(createBackup(t, container, nil)))
+		fullEvents, err := readAll(t, eventsOf(full.Events()))
+		require.NoError(t, err)
+		require.True(t, full.Backup().IsComplete)
+		require.Nil(t, full.Backup().FollowsOn)
+
+		_, err = client.WriteEvents(t.Context(), []eventsourcingdb.EventCandidate{
+			{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-returned", Data: map[string]any{"by": "/readers/23"}},
+		}, nil)
+		require.NoError(t, err)
+
+		incremental := database.NewBackupReader(bytes.NewReader(createBackup(t, container, full.Backup().EndedAt())))
+		incrementalEvents, err := readAll(t, eventsOf(incremental.Events()))
+		require.NoError(t, err)
+		require.True(t, incremental.Backup().IsComplete)
+		assert.Equal(t, full.Backup().EndedAt(), incremental.Backup().FollowsOn)
+		assert.Equal(t, incremental.Backup().LastEvent, incremental.Backup().NamedEnd)
+
+		live, err := readAll(t, database.ReadDatabase(t.Context(), client))
+		require.NoError(t, err)
+
+		backedUp := append(fullEvents, incrementalEvents...)
+		require.Len(t, backedUp, len(live))
+		for i := range live {
+			assert.True(t, backedUp[i].HashMatches, "event %s", backedUp[i].ID)
+			assert.Equal(t, live[i].ID, backedUp[i].ID)
+			assert.Equal(t, live[i].Hash, backedUp[i].Hash)
+			assert.True(t, live[i].Time.Equal(backedUp[i].Time))
+		}
+	})
+}
+
+// eventsOf returns the events a backup holds, as they are checked.
+func eventsOf(backedUp func(func(database.BackedUpEvent, error) bool)) func(func(database.Event, error) bool) {
+	return func(yield func(database.Event, error) bool) {
+		for event, err := range backedUp {
+			if !yield(event.Event, err) || err != nil {
+				return
+			}
+		}
+	}
 }

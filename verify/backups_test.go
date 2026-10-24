@@ -1,0 +1,444 @@
+package verify_test
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
+	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
+)
+
+// namedBackup is a backup of a chain, by the name the findings use for it.
+type namedBackup struct {
+	name, content string
+}
+
+var (
+	fullBackup               = namedBackup{"full.ndjson", databasetest.FullBackup}
+	fullBackupOfV1           = namedBackup{"v1.ndjson", databasetest.FullBackupOfAPIVersion1}
+	firstIncrementalBackup   = namedBackup{"incremental-1.ndjson", databasetest.FirstIncrementalBackup}
+	secondIncrementalBackup  = namedBackup{"incremental-2.ndjson", databasetest.SecondIncrementalBackup}
+	laterFullBackup          = namedBackup{"full-later.ndjson", databasetest.LaterFullBackup}
+	backupWithoutEvents      = namedBackup{"incremental-3.ndjson", databasetest.IncrementalBackupWithoutEvents}
+	eventsOfLaterFullBackup  = mustReadEvents(databasetest.LaterFullBackup)
+	lastEventOfTheChainAt    = eventsOfLaterFullBackup[len(eventsOfLaterFullBackup)-1].Time
+	afterTheLastConfirmation = lastEventOfTheChainAt.Add(90 * time.Second)
+)
+
+func mustReadEvents(backup string) []database.Event {
+	var events []database.Event
+	for event, err := range database.ReadBackup(strings.NewReader(backup)) {
+		if err != nil {
+			panic(err)
+		}
+		events = append(events, event)
+	}
+
+	return events
+}
+
+// changed returns the backup with the first occurrence of old in the line
+// with the given index replaced with new, under another name, if one is
+// given.
+func (b namedBackup) changed(t *testing.T, index int, old, new string) namedBackup {
+	t.Helper()
+
+	lines := strings.SplitAfter(b.content, "\n")
+	require.Contains(t, lines[index], old)
+	lines[index] = strings.Replace(lines[index], old, new, 1)
+
+	return namedBackup{name: b.name, content: strings.Join(lines, "")}
+}
+
+// withoutLines returns the backup without its lines from the given index on,
+// up to the given one, excluding it, or to the end for -1.
+func (b namedBackup) withoutLines(from, to int) namedBackup {
+	lines := strings.SplitAfter(b.content, "\n")
+	if to < 0 {
+		to = len(lines)
+	}
+
+	return namedBackup{name: b.name, content: strings.Join(slices.Delete(lines, from, to), "")}
+}
+
+func (b namedBackup) renamed(name string) namedBackup {
+	return namedBackup{name: name, content: b.content}
+}
+
+func sourcesOf(backups ...namedBackup) []verify.BackupSource {
+	sources := make([]verify.BackupSource, 0, len(backups))
+	for _, backup := range backups {
+		sources = append(sources, verify.BackupSource{
+			Name: backup.name,
+			Open: func() (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(backup.content)), nil
+			},
+		})
+	}
+
+	return sources
+}
+
+// confirmedChain returns a custodian that has confirmed every event of the
+// chain half a minute after it was written.
+func confirmedChain() verify.CustodianResult {
+	var fingerprints []verify.ConfirmedFingerprint
+	for i, event := range eventsOfLaterFullBackup {
+		fingerprints = append(fingerprints, verify.ConfirmedFingerprint{
+			EventID:            event.ID,
+			EventHash:          event.Hash,
+			Sequence:           uint64(i + 1),
+			ReceivedAt:         event.Time.Add(30 * time.Second),
+			IsAfterLatestReset: true,
+		})
+	}
+
+	result := custodianResult(fingerprints)
+	result.Intervals[0].ValidFrom = eventsOfLaterFullBackup[0].Time.Add(-time.Hour)
+
+	return result
+}
+
+func verifyBackups(t *testing.T, custodian verify.CustodianResult, backups ...namedBackup) verify.BackupsResult {
+	t.Helper()
+
+	result, err := verify.VerifyBackups(sourcesOf(backups...), custodian, afterTheLastConfirmation)
+	require.NoError(t, err)
+
+	return result
+}
+
+func namesOf(result verify.BackupsResult) []string {
+	var names []string
+	for _, backup := range result.Backups {
+		names = append(names, backup.Name)
+	}
+
+	return names
+}
+
+// assertFindings asserts that the result holds exactly the findings with the
+// given messages, by their severities, and checks.
+func assertFindings(t *testing.T, result verify.BackupsResult, expected ...verify.Finding) {
+	t.Helper()
+
+	require.Len(t, result.Findings, len(expected), "findings: %v", result.Findings)
+	for i, finding := range expected {
+		assert.Equal(t, finding.Severity, result.Findings[i].Severity, "finding %d", i)
+		assert.Equal(t, finding.Check, result.Findings[i].Check, "finding %d", i)
+		assert.Contains(t, result.Findings[i].Message, finding.Message, "finding %d", i)
+	}
+}
+
+func manipulation(check, message string) verify.Finding {
+	return verify.Finding{Severity: verify.SeverityManipulation, Check: check, Message: message}
+}
+
+func gap(check, message string) verify.Finding {
+	return verify.Finding{Severity: verify.SeverityGap, Check: check, Message: message}
+}
+
+func TestVerifyBackups(t *testing.T) {
+	t.Run("finds nothing in a full backup and two incremental ones that follow on it", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup, secondIncrementalBackup)
+
+		assertFindings(t, result)
+		assert.Equal(t, 10, result.EventCount)
+		assert.Equal(t, eventsOfLaterFullBackup[0].Time, result.FirstEventAt)
+		assert.Equal(t, lastEventOfTheChainAt, result.LastEventAt)
+	})
+
+	t.Run("finds nothing in a backup of /api/v1/backup and incremental ones in the format of create-backup that follow on its last event", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), fullBackupOfV1, firstIncrementalBackup, secondIncrementalBackup)
+
+		assertFindings(t, result)
+		assert.Equal(t, 10, result.EventCount)
+	})
+
+	t.Run("orders the backups by the events they follow on, whatever order they are given in", func(t *testing.T) {
+		for _, order := range [][]namedBackup{
+			{backupWithoutEvents, secondIncrementalBackup, firstIncrementalBackup, fullBackup},
+			{secondIncrementalBackup, fullBackup, backupWithoutEvents, firstIncrementalBackup},
+			{firstIncrementalBackup, backupWithoutEvents, fullBackup, secondIncrementalBackup},
+		} {
+			result := verifyBackups(t, confirmedChain(), order...)
+
+			assertFindings(t, result)
+			assert.Equal(t, 10, result.EventCount)
+			assert.Equal(t, []string{"full.ndjson", "incremental-1.ndjson", "incremental-2.ndjson", "incremental-3.ndjson"}, namesOf(result))
+		}
+	})
+
+	t.Run("names every backup with its SHA-256, in the order of the chain", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), secondIncrementalBackup, fullBackup, firstIncrementalBackup)
+
+		require.Len(t, result.Backups, 3)
+		for i, backup := range []namedBackup{fullBackup, firstIncrementalBackup, secondIncrementalBackup} {
+			digest := sha256.Sum256([]byte(backup.content))
+			assert.Equal(t, verify.CheckedBackup{Name: backup.name, SHA256: hex.EncodeToString(digest[:])}, result.Backups[i])
+		}
+	})
+
+	t.Run("names the events before an incremental backup that starts the chain as a gap, and checks the rest", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), secondIncrementalBackup, firstIncrementalBackup)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Events 0 to 3 are in none of the backups, so they could not be checked"),
+		)
+		assert.Equal(t, 6, result.EventCount)
+	})
+
+	t.Run("names the events between backups that do not meet as a gap", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), fullBackup, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Events 4 to 6 are in none of the backups, so they could not be checked"),
+		)
+		assert.Equal(t, 7, result.EventCount)
+	})
+
+	t.Run("names a single event that none of the backups holds", func(t *testing.T) {
+		// The events 6 to 9 and the item that names the event the backup
+		// ended at are taken out, so it ends at event 5, and is complete.
+		withoutEvent6 := laterFullBackup.withoutLines(9, 14).renamed("full-until-5.ndjson")
+
+		result := verifyBackups(t, confirmedChain(), withoutEvent6, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Event 6 is in none of the backups, so it could not be checked"),
+		)
+	})
+
+	t.Run("finds an incremental backup that follows on an event with another hash than the backup before it holds it with", func(t *testing.T) {
+		otherHash := firstIncrementalBackup.changed(t, 0, `"hash":"esdb:hash:v2:da03`, `"hash":"esdb:hash:v2:ea03`)
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, otherHash, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			manipulation(verify.CheckBackups, "Backup incremental-1.ndjson follows on event 3 with the hash esdb:hash:v2:ea0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0, but full.ndjson holds that event with the hash esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0"),
+		)
+	})
+
+	t.Run("finds incremental backups that follow on an event none of the backups holds with different hashes", func(t *testing.T) {
+		otherHash := secondIncrementalBackup.changed(t, 0, `"hash":"esdb:hash:v2:137a`, `"hash":"esdb:hash:v2:237a`).renamed("other.ndjson")
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, secondIncrementalBackup, otherHash)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Events 4 to 6 are in none of the backups"),
+			manipulation(verify.CheckBackups, "Backups incremental-2.ndjson and other.ndjson follow on event 6 with different hashes, esdb:hash:v2:137a"),
+		)
+	})
+
+	t.Run("finds the first event after a gap that does not follow on the event its backup follows on", func(t *testing.T) {
+		otherHash := secondIncrementalBackup.changed(t, 0, `"hash":"esdb:hash:v2:137a`, `"hash":"esdb:hash:v2:237a`)
+
+		result := verifyBackups(t, custodianResult(nil), fullBackup, otherHash)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Events 4 to 6 are in none of the backups"),
+			manipulation(verify.CheckEventChain, "Event 7 does not follow event 6, which its backup follows on, since it names another predecessor hash"),
+		)
+	})
+
+	t.Run("compares the hash that a backup follows on with the fingerprint of the custodian, if none of the backups holds that event", func(t *testing.T) {
+		custodian := confirmedChain()
+		custodian.Fingerprints[6].EventHash = "esdb:hash:v2:confirmed"
+
+		result := verifyBackups(t, custodian, fullBackup, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Events 4 to 6 are in none of the backups"),
+			manipulation(verify.CheckFingerprints, "Event 6 has the hash esdb:hash:v2:137a892772cf40aecc449a57dc8eb830d4d8191dd124f830805c05d1ff9aac19, as the backup that follows on it names it, but the custodian confirmed the hash esdb:hash:v2:confirmed"),
+		)
+	})
+
+	t.Run("accepts backups that overlap, if they hold the same events, and counts every event once", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), laterFullBackup, secondIncrementalBackup, fullBackupOfV1, firstIncrementalBackup, fullBackup)
+
+		assertFindings(t, result)
+		assert.Equal(t, 10, result.EventCount)
+		assert.Equal(t, []string{"v1.ndjson", "full.ndjson", "full-later.ndjson", "incremental-1.ndjson", "incremental-2.ndjson"}, namesOf(result))
+	})
+
+	t.Run("accepts an incremental backup that follows on an event within the backup before it", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), laterFullBackup, firstIncrementalBackup)
+
+		assertFindings(t, result)
+		assert.Equal(t, 10, result.EventCount)
+	})
+
+	t.Run("finds an event that differs between backups that overlap, naming both of them", func(t *testing.T) {
+		changedLater := laterFullBackup.changed(t, 4, `"city":"Zürich"`, `"city":"Zurich"`)
+
+		result := verifyBackups(t, confirmedChain(), changedLater, fullBackup, firstIncrementalBackup)
+
+		assertFindings(t, result,
+			manipulation(verify.CheckBackups, "Event 1 is not the same in full.ndjson and in full-later.ndjson, which differ in data"),
+		)
+	})
+
+	t.Run("finds an event that differs between backups that overlap, also in a member that a hash of version 1 does not cover", func(t *testing.T) {
+		original := namedBackup{"both.ndjson", databasetest.BackupWithHashesOfBothVersions}
+		changed := original.changed(t, 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-`, `"traceparent":"00-1af7651916cd43dd8448eb211c80319c-`).renamed("changed.ndjson")
+
+		result, err := verify.VerifyBackups(sourcesOf(original, changed), custodianResult(nil), tenOClock)
+		require.NoError(t, err)
+
+		backups := eventFindingsOf(result.EventsResult, verify.SeverityManipulation, verify.CheckBackups)
+		require.Len(t, backups, 1)
+		assert.Contains(t, backups[0].Message, "Event 0 is not the same in both.ndjson and in changed.ndjson, which differ in traceparent")
+		assert.Empty(t, eventFindingsOf(result.EventsResult, verify.SeverityManipulation, verify.CheckEventHashes))
+	})
+
+	t.Run("finds an event that differs in the first backup that holds it, which is checked", func(t *testing.T) {
+		changedFull := fullBackup.changed(t, 3, `"city":"Zürich"`, `"city":"Zurich"`)
+
+		result := verifyBackups(t, confirmedChain(), laterFullBackup, changedFull)
+
+		assertFindings(t, result,
+			manipulation(verify.CheckBackups, "Event 1 is not the same in full.ndjson and in full-later.ndjson, which differ in data"),
+			manipulation(verify.CheckEventHashes, "Event 1 has been changed"),
+		)
+	})
+
+	t.Run("finds an event that has been changed in one of the backups", func(t *testing.T) {
+		changed := firstIncrementalBackup.changed(t, 4, `"title":"Ubik"`, `"title":"Valis"`)
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, changed, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			manipulation(verify.CheckEventHashes, "Event 5 has been changed"),
+		)
+	})
+
+	t.Run("names a backup without its end item as a gap, and checks its events", func(t *testing.T) {
+		withoutEnd := secondIncrementalBackup.withoutLines(7, -1)
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup, withoutEnd)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup incremental-2.ndjson is incomplete, since it was cut short before its end item, so events after event 9 may be missing from it"),
+		)
+		assert.Equal(t, 10, result.EventCount)
+	})
+
+	t.Run("names a backup that was cut short as a gap, without taking the events it lacks for missing", func(t *testing.T) {
+		cutShort := secondIncrementalBackup.withoutLines(4, -1)
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup, cutShort)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup incremental-2.ndjson is incomplete, since it was cut short before its end item, so events after event 7 may be missing from it"),
+		)
+		assert.Equal(t, 8, result.EventCount)
+	})
+
+	t.Run("names a backup that was cut short in the middle of a line as a gap", func(t *testing.T) {
+		cutShort := namedBackup{
+			name:    secondIncrementalBackup.name,
+			content: secondIncrementalBackup.content[:strings.Index(secondIncrementalBackup.content, `"id":"8"`)],
+		}
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup, cutShort)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup incremental-2.ndjson is incomplete, since it was cut short before its end item, so events after event 7 may be missing from it"),
+		)
+		assert.Equal(t, 8, result.EventCount)
+	})
+
+	t.Run("names a backup with an error as a gap, even with its end item", func(t *testing.T) {
+		errorLine := strings.SplitAfter(databasetest.RefusedBackup, "\n")[0]
+		withError := namedBackup{
+			name:    secondIncrementalBackup.name,
+			content: strings.Join(slices.Concat(strings.SplitAfter(secondIncrementalBackup.content, "\n")[:5], []string{errorLine, `{"type":"end","data":{}}` + "\n"}), ""),
+		}
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup, withError)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup incremental-2.ndjson is incomplete, since the database could not back up everything (last backed up event is mismatched"),
+		)
+		assert.Contains(t, result.Findings[0].Message, "so events after event 8 may be missing from it")
+	})
+
+	t.Run("names an incomplete backup as a gap, even if other backups hold its events", func(t *testing.T) {
+		withoutEnd := firstIncrementalBackup.withoutLines(7, -1)
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, withoutEnd, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup incremental-1.ndjson is incomplete"),
+		)
+	})
+
+	t.Run("finds a backup that names another event as the one it ended at than the one it ended at", func(t *testing.T) {
+		withoutLastEvent := fullBackup.withoutLines(5, 6)
+
+		result := verifyBackups(t, confirmedChain(), withoutLastEvent, firstIncrementalBackup, secondIncrementalBackup)
+
+		assertFindings(t, result,
+			manipulation(verify.CheckBackups, "Backup full.ndjson names event 3 with the hash esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0 as the one it ended at, but it ended at event 2 with the hash esdb:hash:v2:41bf50082d68c6ecabc615294031fb7afa61de93168f895f1433f721db19df67"),
+			gap(verify.CheckBackups, "Event 3 is in none of the backups, so it could not be checked"),
+		)
+	})
+
+	t.Run("fails on a backup that names a version of its format it does not know, and names that backup", func(t *testing.T) {
+		unknown := firstIncrementalBackup.changed(t, 0, `"formatVersion":2`, `"formatVersion":3`)
+
+		_, err := verify.VerifyBackups(sourcesOf(fullBackup, unknown, secondIncrementalBackup), confirmedChain(), afterTheLastConfirmation)
+
+		require.ErrorIs(t, err, database.ErrUnknownBackupFormat)
+		assert.ErrorContains(t, err, "failed to read the backup incremental-1.ndjson: line 1 of the backup")
+		assert.ErrorContains(t, err, "names version 3")
+	})
+
+	t.Run("fails on a file that holds no backup, and names it", func(t *testing.T) {
+		_, err := verify.VerifyBackups(sourcesOf(fullBackup, namedBackup{"refused.ndjson", databasetest.RefusedBackup}), confirmedChain(), afterTheLastConfirmation)
+
+		assert.ErrorContains(t, err, "failed to read the backup refused.ndjson: line 1 of the backup: the file holds no backup")
+	})
+
+	t.Run("fails on a backup that can not be opened, and names it", func(t *testing.T) {
+		sources := sourcesOf(fullBackup)
+		sources[0].Open = func() (io.ReadCloser, error) {
+			return nil, errors.New("no such file")
+		}
+
+		_, err := verify.VerifyBackups(sources, confirmedChain(), afterTheLastConfirmation)
+
+		assert.ErrorContains(t, err, "failed to open the backup full.ndjson: no such file")
+	})
+
+	t.Run("fails on a backup that changes between the two reads", func(t *testing.T) {
+		sources := sourcesOf(fullBackup)
+		reads := 0
+		sources[0].Open = func() (io.ReadCloser, error) {
+			reads++
+			if reads == 1 {
+				return io.NopCloser(strings.NewReader(fullBackup.content)), nil
+			}
+			return io.NopCloser(strings.NewReader(fullBackup.content + "\n")), nil
+		}
+
+		_, err := verify.VerifyBackups(sources, confirmedChain(), afterTheLastConfirmation)
+
+		assert.ErrorContains(t, err, "the backup full.ndjson changed while it was read")
+	})
+
+	t.Run("fails without a backup", func(t *testing.T) {
+		_, err := verify.VerifyBackups(nil, confirmedChain(), afterTheLastConfirmation)
+
+		assert.Error(t, err)
+	})
+}
