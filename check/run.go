@@ -28,10 +28,11 @@ type Options struct {
 	// RootPublicKey is the key that certifies the keys of the custodian.
 	RootPublicKey ed25519.PublicKey
 
-	// Either BackupPaths name the backups of the database of the customer,
-	// of either format, a full backup and incremental ones that follow on
-	// it, or several full ones, in any order, or Database and DatabaseURL
-	// name the running database.
+	// Either BackupPaths name the files of backups of the database of the
+	// customer, of either format, a full backup and incremental ones that
+	// follow on it, or several full ones, in any order, where a file may
+	// hold several backups in the format of create-backup one after another,
+	// or Database and DatabaseURL name the running database.
 	BackupPaths []string
 	Database    *eventsourcingdb.Client
 	DatabaseURL string
@@ -259,7 +260,18 @@ func verifyEvents(ctx context.Context, options Options, custodianResult verify.C
 	}
 
 	for _, backup := range backupsResult.Backups {
-		sources.Backups = append(sources.Backups, report.Backup{Path: backup.Name, SHA256: backup.SHA256})
+		named := report.Backup{Path: backup.Name, SHA256: backup.SHA256}
+		for _, part := range backup.Parts {
+			described := report.BackupPart{Number: part.Number}
+			if part.FollowsOn != nil {
+				described.FollowsOn = part.FollowsOn.ID
+			}
+			if part.EndedAt != nil {
+				described.EndedAt = part.EndedAt.ID
+			}
+			named.Parts = append(named.Parts, described)
+		}
+		sources.Backups = append(sources.Backups, named)
 	}
 
 	return backupsResult.EventsResult, nil

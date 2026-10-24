@@ -267,21 +267,49 @@ func TestReadBackup(t *testing.T) {
 	})
 }
 
-// backedUpEventsOf reads the events of a backup with a BackupReader, and
-// returns them together with what the backup tells about itself.
+// backedUpEventsOf reads the events of a file that holds a single backup with
+// a BackupReader, and returns them together with what the backup tells about
+// itself.
 func backedUpEventsOf(t *testing.T, backup string) ([]database.BackedUpEvent, database.Backup, error) {
+	t.Helper()
+
+	events, backups, err := backedUpEventsOfFile(t, backup)
+	if len(backups) == 0 {
+		return events, database.Backup{}, err
+	}
+	if err == nil {
+		require.Len(t, backups, 1)
+	}
+
+	return events, backups[len(backups)-1], err
+}
+
+// backedUpEventsOfFile reads the events of a file with a BackupReader, and
+// returns them together with what every backup of the file tells about
+// itself.
+func backedUpEventsOfFile(t *testing.T, backup string) ([]database.BackedUpEvent, []database.Backup, error) {
 	t.Helper()
 
 	reader := database.NewBackupReader(strings.NewReader(backup))
 	var events []database.BackedUpEvent
 	for event, err := range reader.Events() {
 		if err != nil {
-			return events, reader.Backup(), err
+			return events, reader.Backups(), err
 		}
 		events = append(events, event)
 	}
 
-	return events, reader.Backup(), nil
+	return events, reader.Backups(), nil
+}
+
+// onlyBackupOf returns what the single backup a reader has read tells about
+// itself.
+func onlyBackupOf(t *testing.T, reader *database.BackupReader) database.Backup {
+	t.Helper()
+
+	require.Len(t, reader.Backups(), 1)
+
+	return reader.Backups()[0]
 }
 
 // withoutLines removes the lines of a backup from the given index on, up to
@@ -475,10 +503,99 @@ func TestBackupReader(t *testing.T) {
 		assert.ErrorContains(t, err, "line 1 of the backup: the file holds no backup, but the error the database answered with instead: last backed up event is mismatched")
 	})
 
-	t.Run("fails on a file that holds a further backup after the end of the first one", func(t *testing.T) {
-		_, _, err := backedUpEventsOf(t, databasetest.FullBackup+databasetest.FirstIncrementalBackup)
+	t.Run("reads several backups one after another in one file, as EventSourcingDB restores them", func(t *testing.T) {
+		heartbeat := `{"type":"heartbeat","data":{}}` + "\n"
+		for _, test := range []struct {
+			name, file string
+		}{
+			{"as cat writes them", databasetest.FullBackup + databasetest.FirstIncrementalBackup + databasetest.SecondIncrementalBackup},
+			{"with heartbeats between them", databasetest.FullBackup + heartbeat + databasetest.FirstIncrementalBackup + heartbeat + heartbeat + databasetest.SecondIncrementalBackup},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				events, backups, err := backedUpEventsOfFile(t, test.file)
 
-		assert.ErrorContains(t, err, "line 9 of the backup: the file holds a further backup after the end of the first one, so give every backup as a file of its own")
+				require.NoError(t, err)
+				require.Len(t, events, 10)
+				for i, event := range events {
+					assert.Equal(t, fmt.Sprint(i), event.ID)
+					assert.True(t, event.HashMatches, "event %s", event.ID)
+					assert.Equal(t, []int{0, 0, 0, 0, 1, 1, 1, 2, 2, 2}[i], event.Part, "event %s", event.ID)
+				}
+
+				require.Len(t, backups, 3)
+				for i, followsOn := range []string{"", "3", "6"} {
+					assert.True(t, backups[i].IsComplete)
+					assert.Equal(t, database.BackupFormatVersion2, backups[i].FormatVersion)
+					assert.Equal(t, []string{"3", "6", "9"}[i], backups[i].EndedAt().ID)
+					if followsOn == "" {
+						assert.Nil(t, backups[i].FollowsOn)
+					} else {
+						assert.Equal(t, followsOn, backups[i].FollowsOn.ID)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("reads several backups in one file in any order, and tells which of them is incomplete", func(t *testing.T) {
+		withoutEnd := strings.TrimSuffix(databasetest.FirstIncrementalBackup, `{"type":"end","data":{}}`+"\n")
+
+		events, backups, err := backedUpEventsOfFile(t, databasetest.SecondIncrementalBackup+databasetest.FullBackup+withoutEnd)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 10)
+		require.Len(t, backups, 3)
+		assert.Equal(t, "6", backups[0].FollowsOn.ID)
+		assert.Nil(t, backups[1].FollowsOn)
+		assert.Equal(t, "3", backups[2].FollowsOn.ID)
+		assert.Equal(t, []bool{true, true, false}, []bool{backups[0].IsComplete, backups[1].IsComplete, backups[2].IsComplete})
+	})
+
+	t.Run("fails on several backups in one file where one begins before the one before it ended", func(t *testing.T) {
+		withoutEnd := strings.TrimSuffix(databasetest.FullBackup, `{"type":"end","data":{}}`+"\n")
+
+		_, _, err := backedUpEventsOfFile(t, withoutEnd+databasetest.FirstIncrementalBackup)
+
+		assert.ErrorContains(t, err, "line 8 of the backup: the backup holds a second backup item before its end item")
+	})
+
+	t.Run("fails on what EventSourcingDB answered instead of a backup after a backup", func(t *testing.T) {
+		_, _, err := backedUpEventsOfFile(t, databasetest.FullBackup+databasetest.RefusedBackup)
+
+		assert.ErrorContains(t, err, `line 9 of the backup: the backup holds an item of type "error" after its end item`)
+	})
+
+	t.Run("takes a backup of /api/v1/backup with an error for incomplete, and still reads the events before the error", func(t *testing.T) {
+		lines := strings.SplitAfter(databasetest.FullBackupOfAPIVersion1, "\n")
+		withError := strings.Join(slices.Concat(lines[:4], []string{`{"type":"error","payload":"failed to create backup"}` + "\n"}), "")
+
+		events, backup, err := backedUpEventsOf(t, withError)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 3)
+		assert.Equal(t, database.BackupFormatVersion1, backup.FormatVersion)
+		assert.False(t, backup.IsComplete)
+		assert.Equal(t, "failed to create backup", backup.Failure)
+		assert.Equal(t, "2", backup.EndedAt().ID)
+	})
+
+	t.Run("fails on a line after the error the database wrote into a backup", func(t *testing.T) {
+		v1Lines := strings.SplitAfter(databasetest.FullBackupOfAPIVersion1, "\n")
+		v2Lines := strings.SplitAfter(databasetest.SecondIncrementalBackup, "\n")
+		errorLine := strings.SplitAfter(databasetest.RefusedBackup, "\n")[0]
+
+		for _, test := range []struct {
+			name, backup, message string
+		}{
+			{"of /api/v1/backup", strings.Join(slices.Concat(v1Lines[:3], []string{`{"type":"error","payload":"failed to create backup"}` + "\n"}, v1Lines[3:]), ""), "line 5 of the backup: the backup holds a line after the error the database wrote into it"},
+			{"in the format of create-backup", strings.Join(slices.Concat(v2Lines[:4], []string{errorLine}, v2Lines[4:]), ""), `line 6 of the backup: the backup holds an item of type "event" after the error the database wrote into it`},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, _, err := backedUpEventsOfFile(t, test.backup)
+
+				assert.ErrorContains(t, err, test.message)
+			})
+		}
 	})
 
 	t.Run("fails on items where the format of create-backup puts none", func(t *testing.T) {
@@ -690,20 +807,20 @@ func TestReadDatabase(t *testing.T) {
 		full := database.NewBackupReader(bytes.NewReader(createBackup(t, container, nil)))
 		fullEvents, err := readAll(t, eventsOf(full.Events()))
 		require.NoError(t, err)
-		require.True(t, full.Backup().IsComplete)
-		require.Nil(t, full.Backup().FollowsOn)
+		require.True(t, onlyBackupOf(t, full).IsComplete)
+		require.Nil(t, onlyBackupOf(t, full).FollowsOn)
 
 		_, err = client.WriteEvents(t.Context(), []eventsourcingdb.EventCandidate{
 			{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-returned", Data: map[string]any{"by": "/readers/23"}},
 		}, nil)
 		require.NoError(t, err)
 
-		incremental := database.NewBackupReader(bytes.NewReader(createBackup(t, container, full.Backup().EndedAt())))
+		incremental := database.NewBackupReader(bytes.NewReader(createBackup(t, container, onlyBackupOf(t, full).EndedAt())))
 		incrementalEvents, err := readAll(t, eventsOf(incremental.Events()))
 		require.NoError(t, err)
-		require.True(t, incremental.Backup().IsComplete)
-		assert.Equal(t, full.Backup().EndedAt(), incremental.Backup().FollowsOn)
-		assert.Equal(t, incremental.Backup().LastEvent, incremental.Backup().NamedEnd)
+		require.True(t, onlyBackupOf(t, incremental).IsComplete)
+		assert.Equal(t, onlyBackupOf(t, full).EndedAt(), onlyBackupOf(t, incremental).FollowsOn)
+		assert.Equal(t, onlyBackupOf(t, incremental).LastEvent, onlyBackupOf(t, incremental).NamedEnd)
 
 		live, err := readAll(t, database.ReadDatabase(t.Context(), client))
 		require.NoError(t, err)

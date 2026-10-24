@@ -18,44 +18,62 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
 )
 
-// BackupSource is a backup of the database of a customer, of either format,
-// as one of a chain of backups: a full backup, and incremental backups that
-// follow on it, or several full ones.
+// BackupSource is a file that holds a backup of the database of a customer,
+// of either format, or several backups in the format of create-backup one
+// after another, as one or more of a chain of backups: a full backup, and
+// incremental backups that follow on it, or several full ones.
 type BackupSource struct {
-	// Name names the backup in findings, such as its path.
+	// Name names the file in findings, such as its path.
 	Name string
 
-	// Open opens the backup, to read it from its start. VerifyBackups opens
-	// every backup twice: once to learn where it starts and ends, and once
-	// to check its events together with the ones of the other backups.
+	// Open opens the file, to read it from its start. VerifyBackups opens
+	// every file at least twice: once to learn where its backups start and
+	// end, and once for every backup it holds, to check its events together
+	// with the ones of the other backups.
 	Open func() (io.ReadCloser, error)
 }
 
-// CheckedBackup names a backup that VerifyBackups has checked, and its
-// SHA-256, so that it is clear which one was checked.
+// CheckedBackup names a file that VerifyBackups has checked, and its
+// SHA-256, so that it is clear which one was checked, together with the
+// backups it holds, if it holds more than one.
 type CheckedBackup struct {
 	Name   string
 	SHA256 string
+	Parts  []CheckedPart
+}
+
+// CheckedPart is one of several backups that a file holds one after another,
+// by its number within the file, from 1 on, with the event it follows on, or
+// none for a full backup, and the event it ended at, or none for a full
+// backup without events.
+type CheckedPart struct {
+	Number    int
+	FollowsOn *database.EventReference
+	EndedAt   *database.EventReference
 }
 
 // BackupsResult is what checking the events of a chain of backups has found.
 type BackupsResult struct {
 	EventsResult
 
-	// Backups are the backups that were checked, in the order of the chain.
+	// Backups are the files that were checked, in the order of the chain, by
+	// the first backup each of them holds.
 	Backups []CheckedBackup
 }
 
 // VerifyBackups checks the events of a chain of backups, as if they came from
-// a single one. It orders the backups by the events they follow on, whatever
-// order they are given in: full backups first, then the incremental ones.
+// a single one. Every backup of a file that holds several of them counts as
+// one of its own, which findings name by the file and its number. It orders
+// the backups by the events they follow on, whatever order they are given in:
+// full backups first, then the incremental ones.
 // Every backup has to hold every event from the one after the event it
 // follows on, or from the first one, up to the one it ended at, an
 // incremental backup has to follow on an event that the backups before it
 // hold with the same hash, and an event that several backups hold has to be
 // the same in all of them, or else it is a manipulation. A span of events
-// that none of the backups holds is a gap, as is a backup that is incomplete.
-// Then it checks the events of all of them, each one once, as VerifyEvents
+// that none of the backups holds is a gap, as is a backup that is incomplete,
+// unless complete backups hold every event it may lack, which makes it a
+// notice. Then it checks the events of all of them, each one once, as VerifyEvents
 // does, except that the events none of the backups holds do not count as
 // missing.
 //
@@ -66,13 +84,13 @@ func VerifyBackups(backups []BackupSource, custodian CustodianResult, now time.T
 		return BackupsResult{}, errors.New("no backup was given")
 	}
 
-	parts := make([]*backupPart, 0, len(backups))
+	var parts []*backupPart
 	for i, source := range backups {
-		part, err := scanBackup(i, source)
+		partsOfFile, err := scanBackup(i, source)
 		if err != nil {
 			return BackupsResult{}, err
 		}
-		parts = append(parts, part)
+		parts = append(parts, partsOfFile...)
 	}
 
 	orderParts(parts)
@@ -84,14 +102,20 @@ func VerifyBackups(backups []BackupSource, custodian CustodianResult, now time.T
 		return BackupsResult{}, err
 	}
 
-	// The report names the SHA-256 of what was checked, so a backup must
-	// not have changed between the two reads.
+	// The report names the SHA-256 of what was checked, so a file must not
+	// have changed between the reads.
 	result := BackupsResult{EventsResult: eventsResult}
+	isNamed := map[int]bool{}
 	for _, part := range parts {
 		if part.checkedSHA256 != part.sha256 {
 			return BackupsResult{}, fmt.Errorf("the backup %s changed while it was read, so it was not checked", part.source.Name)
 		}
-		result.Backups = append(result.Backups, CheckedBackup{Name: part.source.Name, SHA256: part.sha256})
+		if isNamed[part.fileIndex] {
+			continue
+		}
+		isNamed[part.fileIndex] = true
+
+		result.Backups = append(result.Backups, checkedBackupOf(part, parts))
 	}
 
 	result.Findings = slices.Concat(plan.found, merged.found, eventsResult.Findings)
@@ -99,16 +123,39 @@ func VerifyBackups(backups []BackupSource, custodian CustodianResult, now time.T
 	return result, nil
 }
 
-// backupPart is a backup of a chain, as reading it the first time has found
-// it.
-type backupPart struct {
-	index  int
-	source BackupSource
-	backup database.Backup
-	sha256 string
+// checkedBackupOf names the file of a backup, together with all backups it
+// holds, in the order of the file, if it holds more than one.
+func checkedBackupOf(part *backupPart, parts []*backupPart) CheckedBackup {
+	checked := CheckedBackup{Name: part.source.Name, SHA256: part.sha256}
+	if part.partsInFile == 1 {
+		return checked
+	}
 
-	// checkedSHA256 is the SHA-256 of the backup as it was read the second
-	// time, when its events were checked.
+	for _, other := range parts {
+		if other.fileIndex == part.fileIndex {
+			checked.Parts = append(checked.Parts, CheckedPart{Number: other.number, FollowsOn: other.backup.FollowsOn, EndedAt: other.backup.EndedAt()})
+		}
+	}
+	slices.SortFunc(checked.Parts, func(left, right CheckedPart) int {
+		return cmp.Compare(left.Number, right.Number)
+	})
+
+	return checked
+}
+
+// backupPart is a backup of a chain, as reading its file the first time has
+// found it: the number of the backup within its file, from 1 on, among the
+// backups the file holds, and the SHA-256 of the whole file.
+type backupPart struct {
+	fileIndex   int
+	source      BackupSource
+	number      int
+	partsInFile int
+	backup      database.Backup
+	sha256      string
+
+	// checkedSHA256 is the SHA-256 of the file as it was read again, when
+	// the events of the backup were checked.
 	checkedSHA256 string
 
 	// followsOnID is the ID of the event an incremental backup follows on,
@@ -129,6 +176,16 @@ type backupPart struct {
 // both.
 type idSpan struct {
 	firstID, lastID uint64
+}
+
+// name names a backup in findings: by its file, and, if the file holds
+// several backups, by its number within the file.
+func (p *backupPart) name() string {
+	if p.partsInFile == 1 {
+		return p.source.Name
+	}
+
+	return fmt.Sprintf("%s, part %d", p.source.Name, p.number)
 }
 
 // openedBackup is a backup that is being read, with its SHA-256, which
@@ -167,21 +224,25 @@ func (o *openedBackup) digest() (string, error) {
 	return hex.EncodeToString(o.hasher.Sum(nil)), nil
 }
 
-// scanBackup reads a backup for the first time, to learn where it starts and
-// where it ends, and checks that the IDs of its events are numbers, since a
-// backup is placed in the chain by them. It notes the events the backup lacks
-// between its start and its end, which another backup that holds them does
-// not make up for, since they have been removed from this one.
-func scanBackup(index int, source BackupSource) (*backupPart, error) {
+// scanBackup reads a file for the first time, to learn where its backups
+// start and where they end, and checks that the IDs of their events are
+// numbers, since a backup is placed in the chain by them. It notes the events
+// a backup lacks between its start and its end, which another backup that
+// holds them does not make up for, since they have been removed from this
+// one.
+func scanBackup(fileIndex int, source BackupSource) ([]*backupPart, error) {
 	opened, err := openBackup(source)
 	if err != nil {
 		return nil, err
 	}
 	defer opened.file.Close()
 
-	part := &backupPart{index: index, source: source}
+	type progress struct {
+		nextID  uint64
+		lacking []idSpan
+	}
+	progressOf := map[int]*progress{}
 
-	hasStarted, nextID := false, uint64(0)
 	for event, err := range opened.reader.Events() {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read the backup %s: %w", source.Name, err)
@@ -194,21 +255,24 @@ func scanBackup(index int, source BackupSource) (*backupPart, error) {
 
 		// The item that names the event an incremental backup follows on
 		// comes before its first event.
-		if !hasStarted {
-			hasStarted = true
-			err = part.readFollowsOn(opened.reader.Backup())
+		current, isKnown := progressOf[event.Part]
+		if !isKnown {
+			current = &progress{}
+			progressOf[event.Part] = current
+
+			followsOnID, isIncremental, err := followsOnIDOf(source, opened.reader.Backups()[event.Part])
 			if err != nil {
 				return nil, err
 			}
-			if part.isIncremental {
-				nextID = part.followsOnID + 1
+			if isIncremental {
+				current.nextID = followsOnID + 1
 			}
 		}
 
-		if eventID > nextID {
-			part.lacking = append(part.lacking, idSpan{firstID: nextID, lastID: eventID - 1})
+		if eventID > current.nextID {
+			current.lacking = append(current.lacking, idSpan{firstID: current.nextID, lastID: eventID - 1})
 		}
-		nextID = max(nextID, eventID+1)
+		current.nextID = max(current.nextID, eventID+1)
 	}
 
 	digest, err := opened.digest()
@@ -216,42 +280,49 @@ func scanBackup(index int, source BackupSource) (*backupPart, error) {
 		return nil, err
 	}
 
-	part.backup, part.sha256 = opened.reader.Backup(), digest
-	err = part.readFollowsOn(part.backup)
-	if err != nil {
-		return nil, err
+	backups := opened.reader.Backups()
+	parts := make([]*backupPart, 0, len(backups))
+	for i, backup := range backups {
+		part := &backupPart{fileIndex: fileIndex, source: source, number: i + 1, partsInFile: len(backups), backup: backup, sha256: digest}
+
+		part.followsOnID, part.isIncremental, err = followsOnIDOf(source, backup)
+		if err != nil {
+			return nil, err
+		}
+		if endedAt := backup.EndedAt(); endedAt != nil {
+			part.hasEndedAt = true
+			part.endedAtID, _ = strconv.ParseUint(endedAt.ID, 10, 64)
+		}
+		if current, isKnown := progressOf[i]; isKnown {
+			part.lacking = current.lacking
+		}
+
+		parts = append(parts, part)
 	}
 
-	if endedAt := part.backup.EndedAt(); endedAt != nil {
-		part.hasEndedAt = true
-		part.endedAtID, _ = strconv.ParseUint(endedAt.ID, 10, 64)
-	}
-
-	return part, nil
+	return parts, nil
 }
 
-// readFollowsOn takes the event that an incremental backup follows on from
-// what the backup tells about itself.
-func (p *backupPart) readFollowsOn(backup database.Backup) error {
-	followsOn := backup.FollowsOn
-	if followsOn == nil {
-		return nil
+// followsOnIDOf returns the ID of the event an incremental backup follows on,
+// and whether it is an incremental one.
+func followsOnIDOf(source BackupSource, backup database.Backup) (uint64, bool, error) {
+	if backup.FollowsOn == nil {
+		return 0, false, nil
 	}
 
-	followsOnID, err := strconv.ParseUint(followsOn.ID, 10, 64)
+	followsOnID, err := strconv.ParseUint(backup.FollowsOn.ID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("failed to read the backup %s: it follows on event %q, which is no event ID", p.source.Name, followsOn.ID)
+		return 0, false, fmt.Errorf("failed to read the backup %s: it follows on event %q, which is no event ID", source.Name, backup.FollowsOn.ID)
 	}
-	p.isIncremental, p.followsOnID = true, followsOnID
 
-	return nil
+	return followsOnID, true, nil
 }
 
 // orderParts orders the backups of a chain: full backups first, then the
 // incremental ones by the event they follow on, and among those that start at
-// the same event, the ones that end earlier first, and else by their names
-// and their contents, so that the order does not depend on the one they were
-// given in.
+// the same event, the ones that end earlier first, and else by the names of
+// their files, their numbers within them, and their contents, so that the
+// order does not depend on the one they were given in.
 func orderParts(parts []*backupPart) {
 	slices.SortStableFunc(parts, func(left, right *backupPart) int {
 		if left.isIncremental != right.isIncremental {
@@ -275,11 +346,14 @@ func orderParts(parts []*backupPart) {
 		if order := cmp.Compare(left.source.Name, right.source.Name); order != 0 {
 			return order
 		}
+		if order := cmp.Compare(left.number, right.number); order != 0 {
+			return order
+		}
 		if order := cmp.Compare(left.sha256, right.sha256); order != 0 {
 			return order
 		}
 
-		return cmp.Compare(left.index, right.index)
+		return cmp.Compare(left.fileIndex, right.fileIndex)
 	})
 }
 
@@ -330,9 +404,6 @@ func planChain(parts []*backupPart) chainPlan {
 		for _, lacking := range part.lacking {
 			plan.found.addLacking(part, lacking)
 		}
-		if !part.backup.IsComplete {
-			plan.found.addIncomplete(part)
-		}
 		plan.found.checkNamedEnd(part)
 	}
 
@@ -343,6 +414,16 @@ func planChain(parts []*backupPart) chainPlan {
 			isEndKnown = true
 		}
 	}
+
+	for _, part := range parts {
+		if part.backup.IsComplete {
+			continue
+		}
+
+		isCovered := isEndKnown && (!isReaching || isHeldByCompleteBackups(parts, part, reach))
+		plan.found.addIncomplete(part, isCovered)
+	}
+
 	if !isEndKnown {
 		firstID := uint64(0)
 		if isReaching {
@@ -352,6 +433,44 @@ func planChain(parts []*backupPart) chainPlan {
 	}
 
 	return plan
+}
+
+// isHeldByCompleteBackups tells whether complete backups hold every event
+// after the one an incomplete backup ended at, up to the furthest event any
+// backup of the chain ends at, so that the events the incomplete backup may
+// lack are all checked all the same. It goes by where the complete backups
+// start and end, since an event a backup lacks in between is a finding of its
+// own.
+func isHeldByCompleteBackups(parts []*backupPart, incomplete *backupPart, reach uint64) bool {
+	nextID := uint64(0)
+	if incomplete.hasEndedAt {
+		nextID = incomplete.endedAtID + 1
+	}
+
+	var held []idSpan
+	for _, part := range parts {
+		if !part.backup.IsComplete || part.backup.LastEvent == nil {
+			continue
+		}
+
+		firstID := uint64(0)
+		if part.isIncremental {
+			firstID = part.followsOnID + 1
+		}
+		held = append(held, idSpan{firstID: firstID, lastID: part.endedAtID})
+	}
+	slices.SortFunc(held, func(left, right idSpan) int {
+		return cmp.Compare(left.firstID, right.firstID)
+	})
+
+	for _, span := range held {
+		if nextID > reach || span.firstID > nextID {
+			break
+		}
+		nextID = max(nextID, span.lastID+1)
+	}
+
+	return nextID > reach
 }
 
 func (f *findings) addUncovered(firstID, lastID uint64) {
@@ -365,25 +484,33 @@ func (f *findings) addUncovered(firstID, lastID uint64) {
 
 func (f *findings) addLacking(part *backupPart, lacking idSpan) {
 	if lacking.firstID == lacking.lastID {
-		f.add(SeverityManipulation, CheckBackups, "Backup %s lacks event %d, which lies between its start and the event it ended at, so the event has been removed from it", part.source.Name, lacking.firstID)
+		f.add(SeverityManipulation, CheckBackups, "Backup %s lacks event %d, which lies between its start and the event it ended at, so the event has been removed from it", part.name(), lacking.firstID)
 		return
 	}
 
-	f.add(SeverityManipulation, CheckBackups, "Backup %s lacks events %d to %d, which lie between its start and the event it ended at, so the events have been removed from it", part.source.Name, lacking.firstID, lacking.lastID)
+	f.add(SeverityManipulation, CheckBackups, "Backup %s lacks events %d to %d, which lie between its start and the event it ended at, so the events have been removed from it", part.name(), lacking.firstID, lacking.lastID)
 }
 
-func (f *findings) addIncomplete(part *backupPart) {
+// addIncomplete names a backup that is incomplete, as a gap, or as a notice,
+// if complete backups hold every event it may lack, which leaves nothing
+// unchecked.
+func (f *findings) addIncomplete(part *backupPart, isCovered bool) {
 	reason := "it was cut short before its end item"
 	if part.backup.Failure != "" {
 		reason = fmt.Sprintf("the database could not back up everything (%s)", part.backup.Failure)
 	}
 
-	if endedAt := part.backup.EndedAt(); endedAt != nil {
-		f.add(SeverityGap, CheckBackups, "Backup %s is incomplete, since %s, so events after event %s may be missing from it", part.source.Name, reason, endedAt.ID)
-		return
+	endedAt := part.backup.EndedAt()
+	switch {
+	case isCovered && endedAt != nil:
+		f.add(SeverityNotice, CheckBackups, "Backup %s is incomplete, since %s, but complete backups hold every event of the chain after event %s", part.name(), reason, endedAt.ID)
+	case isCovered:
+		f.add(SeverityNotice, CheckBackups, "Backup %s is incomplete, since %s, but complete backups hold every event of the chain", part.name(), reason)
+	case endedAt != nil:
+		f.add(SeverityGap, CheckBackups, "Backup %s is incomplete, since %s, so events after event %s may be missing from it", part.name(), reason, endedAt.ID)
+	default:
+		f.add(SeverityGap, CheckBackups, "Backup %s is incomplete, since %s, so events may be missing from it", part.name(), reason)
 	}
-
-	f.add(SeverityGap, CheckBackups, "Backup %s is incomplete, since %s, so events may be missing from it", part.source.Name, reason)
 }
 
 // checkNamedEnd compares the event a backup names as the one it ended at with
@@ -397,13 +524,13 @@ func (f *findings) checkNamedEnd(part *backupPart) {
 
 	endedAt := part.backup.EndedAt()
 	if endedAt == nil {
-		f.add(SeverityManipulation, CheckBackups, "Backup %s names event %s with the hash %s as the one it ended at, but it holds no event, and follows on none", part.source.Name, named.ID, named.Hash)
+		f.add(SeverityManipulation, CheckBackups, "Backup %s names event %s with the hash %s as the one it ended at, but it holds no event, and follows on none", part.name(), named.ID, named.Hash)
 		return
 	}
 
 	namedID, err := strconv.ParseUint(named.ID, 10, 64)
 	if err != nil || !part.hasEndedAt || namedID != part.endedAtID || named.Hash != endedAt.Hash {
-		f.add(SeverityManipulation, CheckBackups, "Backup %s names event %s with the hash %s as the one it ended at, but it ended at event %s with the hash %s", part.source.Name, named.ID, named.Hash, endedAt.ID, endedAt.Hash)
+		f.add(SeverityManipulation, CheckBackups, "Backup %s names event %s with the hash %s as the one it ended at, but it ended at event %s with the hash %s", part.name(), named.ID, named.Hash, endedAt.ID, endedAt.Hash)
 	}
 }
 
@@ -467,7 +594,7 @@ func (m *merge) events() iter.Seq2[database.Event, error] {
 				return
 			}
 
-			next, stop := iter.Pull2(opened.reader.Events())
+			next, stop := iter.Pull2(eventsOfPart(opened.reader, part.number-1))
 			head := &mergeHead{part: part, opened: opened, next: next, stop: stop}
 			heads = append(heads, head)
 
@@ -496,7 +623,7 @@ func (m *merge) events() iter.Seq2[database.Event, error] {
 
 				differences := first.event.DifferencesFrom(head.event)
 				if len(differences) > 0 {
-					m.found.add(SeverityManipulation, CheckBackups, "Event %s is not the same in %s and in %s, which differ in %s", first.event.ID, first.part.source.Name, head.part.source.Name, strings.Join(differences, ", "))
+					m.found.add(SeverityManipulation, CheckBackups, "Event %s is not the same in %s and in %s, which differ in %s", first.event.ID, first.part.name(), head.part.name(), strings.Join(differences, ", "))
 				}
 			}
 			m.compareFollowingOn(first)
@@ -532,6 +659,29 @@ func (m *merge) events() iter.Seq2[database.Event, error] {
 	}
 }
 
+// eventsOfPart hands on the events of one of the backups of a file, by its
+// number within the file, from 0 on.
+func eventsOfPart(reader *database.BackupReader, part int) iter.Seq2[database.BackedUpEvent, error] {
+	return func(yield func(database.BackedUpEvent, error) bool) {
+		for event, err := range reader.Events() {
+			if err != nil {
+				yield(database.BackedUpEvent{}, err)
+				return
+			}
+			if event.Part < part {
+				continue
+			}
+			if event.Part > part {
+				return
+			}
+
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+
 // compareFollowingOn compares the hash that every backup following on an
 // event names with the hash that the backup that holds the event holds it
 // with. EventSourcingDB only follows on an event that it still holds with that
@@ -540,7 +690,7 @@ func (m *merge) events() iter.Seq2[database.Event, error] {
 func (m *merge) compareFollowingOn(held *mergeHead) {
 	for _, part := range m.followingOn[held.id] {
 		if part.backup.FollowsOn.Hash != held.event.Hash {
-			m.found.add(SeverityManipulation, CheckBackups, "Backup %s follows on event %s with the hash %s, but %s holds that event with the hash %s", part.source.Name, held.event.ID, part.backup.FollowsOn.Hash, held.part.source.Name, held.event.Hash)
+			m.found.add(SeverityManipulation, CheckBackups, "Backup %s follows on event %s with the hash %s, but %s holds that event with the hash %s", part.name(), held.event.ID, part.backup.FollowsOn.Hash, held.part.name(), held.event.Hash)
 		}
 	}
 	delete(m.followingOn, held.id)
@@ -554,7 +704,7 @@ func (m *merge) compareFollowingOnEventsHeldByNone() {
 		following := m.followingOn[id]
 		for _, part := range following[1:] {
 			if part.backup.FollowsOn.Hash != following[0].backup.FollowsOn.Hash {
-				m.found.add(SeverityManipulation, CheckBackups, "Backups %s and %s follow on event %d with different hashes, %s and %s", following[0].source.Name, part.source.Name, id, following[0].backup.FollowsOn.Hash, part.backup.FollowsOn.Hash)
+				m.found.add(SeverityManipulation, CheckBackups, "Backups %s and %s follow on event %d with different hashes, %s and %s", following[0].name(), part.name(), id, following[0].backup.FollowsOn.Hash, part.backup.FollowsOn.Hash)
 			}
 		}
 	}

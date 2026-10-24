@@ -102,6 +102,36 @@ func TestWriteText(t *testing.T) {
 			"Events              42")
 	})
 
+	t.Run("names a file that holds several backups once, with every backup it holds", func(t *testing.T) {
+		built := newReport()
+		built.Sources.Backups = []report.Backup{{
+			Path:   "chain.ndjson",
+			SHA256: "abc",
+			Parts: []report.BackupPart{
+				{Number: 1, EndedAt: "3"},
+				{Number: 2, FollowsOn: "3", EndedAt: "6"},
+				{Number: 3, FollowsOn: "6", EndedAt: "6"},
+				{Number: 4},
+			},
+		}}
+
+		var out bytes.Buffer
+		require.NoError(t, report.WriteText(&out, built))
+
+		assert.Contains(t, out.String(), "Backups             chain.ndjson\n"+
+			"                    SHA-256 abc\n"+
+			"                    part 1, full, ended at event 3\n"+
+			"                    part 2, follows on event 3, ended at event 6\n"+
+			"                    part 3, follows on event 6, without events\n"+
+			"                    part 4, full, without events\n"+
+			"Events              42")
+
+		out.Reset()
+		require.NoError(t, report.WriteJSON(&out, built))
+		assert.Contains(t, out.String(), `"parts": [`)
+		assert.Contains(t, out.String(), `"followsOn": "3"`)
+	})
+
 	t.Run("names a database and a receipts directory", func(t *testing.T) {
 		built := newReport()
 		built.Sources.Backups = nil

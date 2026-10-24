@@ -72,16 +72,14 @@ type Backup struct {
 	// in the format of create-backup names one.
 	NamedEnd *EventReference
 
-	// IsComplete reports whether a backup in the format of create-backup
-	// ends with its end item, without an error the database wrote into it.
-	// A backup in the format of /api/v1/backup has no end item, and reading
-	// it fails on an error the database wrote into it, so it counts as
-	// complete.
+	// IsComplete reports whether the database wrote no error into the
+	// backup, and whether a backup in the format of create-backup ends with
+	// its end item. A backup in the format of /api/v1/backup has no end item,
+	// so whether it was cut short can not be told from it.
 	IsComplete bool
 
-	// Failure is what the error says that the database wrote into a backup
-	// in the format of create-backup, if it wrote one, which keeps the
-	// backup from being complete.
+	// Failure is what the error says that the database wrote into the
+	// backup, if it wrote one, which keeps the backup from being complete.
 	Failure string
 }
 
@@ -101,6 +99,10 @@ func (b Backup) EndedAt() *EventReference {
 // compared.
 type BackedUpEvent struct {
 	Event
+
+	// Part is the number of the backup that holds the event, among the
+	// backups of its file, from 0 on.
+	Part int
 
 	content eventContent
 }
@@ -148,38 +150,63 @@ func isSameOptional(left, right *string) bool {
 }
 
 // BackupReader reads a backup of either format, as EventSourcingDB writes it
-// on /api/v1/backup or on /api/v2/management/create-backup, and tells what
-// the backup tells about itself, once its events have been read.
+// on /api/v1/backup or on /api/v2/management/create-backup, or several
+// backups in the format of create-backup one after another, as EventSourcingDB
+// restores them, and tells what every backup tells about itself, once their
+// events have been read.
 type BackupReader struct {
-	backup io.Reader
-	read   Backup
+	backup  io.Reader
+	backups []Backup
 
-	hasStarted bool
-	hasBegun   bool
-	hasEnded   bool
+	hasStarted    bool
+	formatVersion int
+
+	// state is where the reading stands within the backups of the file.
+	state readingState
 }
+
+// readingState is where the reading stands within the backups of a file.
+type readingState int
+
+const (
+	// stateBeforeBackup is before the first backup of a file in the format
+	// of create-backup, and after the end item of every further one.
+	stateBeforeBackup readingState = iota
+
+	// stateInBackup is within a backup, after its backup item.
+	stateInBackup
+
+	// stateAfterFailure is after the error the database wrote into a
+	// backup, which only the end item of a backup in the format of
+	// create-backup may follow.
+	stateAfterFailure
+)
 
 // NewBackupReader returns a reader for a backup of either format.
 func NewBackupReader(backup io.Reader) *BackupReader {
 	return &BackupReader{backup: backup}
 }
 
-// Events reads the events of the backup, in the order they were written, and
-// checks the hash of every event in the version that hash names. It skips the
-// schemas of event types and heartbeats.
+// Events reads the events of the backups of the file, in the order they were
+// written, and checks the hash of every event in the version that hash names.
+// Every event names the backup it belongs to. It skips the schemas of event
+// types and heartbeats.
 //
 // It tells the formats apart as EventSourcingDB does when it restores a
 // backup: one in the format of create-backup begins with a backup item, and
-// one in the format of /api/v1/backup with a line that holds a payload. It
-// fails on a line it does not understand, on a backup in the format of
-// create-backup that names a version of its format this package does not
-// know (ErrUnknownBackupFormat), or that holds a further backup after its end,
-// and on an error the database wrote into a backup in the format of
-// /api/v1/backup, which must not be verified then. An error in a backup in
-// the format of create-backup, or a backup that ends without its end item,
-// only makes the backup incomplete, which Backup tells, so that the events it
-// holds can still be checked. So does the rest of a line that such a backup
-// ends with, if it was cut short while it was transferred.
+// one in the format of /api/v1/backup with a line that holds a payload. A
+// file in the format of create-backup may hold several backups, as
+// EventSourcingDB restores them: every further one begins with its backup
+// item right after the end item of the one before. A file in the format of
+// /api/v1/backup always holds a single one.
+//
+// It fails on a line it does not understand, or that stands where the format
+// puts none, and on a backup that names a version of its format this package
+// does not know (ErrUnknownBackupFormat). An error the database wrote into a
+// backup, and a backup in the format of create-backup that ends without its
+// end item, only make the backup incomplete, which Backups tells, so that the
+// events it holds can still be checked. So does the rest of a line that such
+// a backup ends with, if it was cut short while it was transferred.
 //
 // The events of a backup can be read only once.
 func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
@@ -212,7 +239,7 @@ func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
 				// of that line, which is left aside. The backup lacks its
 				// end item then, which makes it incomplete.
 				var syntaxError *json.SyntaxError
-				if errors.As(err, &syntaxError) && !isLineTerminated && r.hasBegun && !r.hasEnded {
+				if errors.As(err, &syntaxError) && !isLineTerminated && r.formatVersion == BackupFormatVersion2 && r.state != stateBeforeBackup {
 					break
 				}
 
@@ -223,7 +250,8 @@ func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
 				continue
 			}
 
-			r.read.LastEvent = &EventReference{ID: event.ID, Hash: event.Hash}
+			event.Part = len(r.backups) - 1
+			r.current().LastEvent = &EventReference{ID: event.ID, Hash: event.Hash}
 			if !yield(event, nil) {
 				return
 			}
@@ -236,24 +264,35 @@ func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
 		}
 
 		// A backup without a single line is taken for an empty one in the
-		// format of /api/v1/backup, as EventSourcingDB restores it.
+		// format of /api/v1/backup, as EventSourcingDB restores it. Such a
+		// backup has no end item, so it is complete unless the database
+		// wrote an error into it.
 		if !r.hasStarted {
-			r.read.FormatVersion = BackupFormatVersion1
+			r.backups = []Backup{{FormatVersion: BackupFormatVersion1}}
+			r.formatVersion = BackupFormatVersion1
 		}
-		r.read.IsComplete = r.read.FormatVersion == BackupFormatVersion1 || (r.hasEnded && r.read.Failure == "")
+		if r.formatVersion == BackupFormatVersion1 {
+			r.current().IsComplete = r.current().Failure == ""
+		}
 	}
 }
 
-// Backup returns what the backup tells about itself. It is only known once
-// Events has read the backup to its end.
-func (r *BackupReader) Backup() Backup {
-	return r.read
+// Backups returns what every backup of the file tells about itself, in the
+// order of the file. It is only known once Events has read the file to its
+// end.
+func (r *BackupReader) Backups() []Backup {
+	return r.backups
 }
 
-// ReadBackup reads the events of a backup of either format, as BackupReader
-// does, and fails at the end of a backup that is incomplete, since its events
-// may not be all of them. To check the events of an incomplete backup, and to
-// learn which event an incremental backup follows on, use BackupReader.
+func (r *BackupReader) current() *Backup {
+	return &r.backups[len(r.backups)-1]
+}
+
+// ReadBackup reads the events of the backups of a file, of either format, as
+// BackupReader does, and fails at the end of the file if a backup is
+// incomplete, since its events may not be all of them. To check the events of
+// an incomplete backup, and to learn which event an incremental backup follows
+// on, use BackupReader.
 func ReadBackup(backup io.Reader) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		reader := NewBackupReader(backup)
@@ -268,14 +307,17 @@ func ReadBackup(backup io.Reader) iter.Seq2[Event, error] {
 			}
 		}
 
-		read := reader.Backup()
-		if !read.IsComplete {
+		for _, read := range reader.Backups() {
+			if read.IsComplete {
+				continue
+			}
 			if read.Failure != "" {
 				yield(Event{}, fmt.Errorf("the backup is incomplete, since the database could not back up everything: %s", read.Failure))
 				return
 			}
 
 			yield(Event{}, errors.New("the backup is incomplete, since it lacks its end item"))
+			return
 		}
 	}
 }
@@ -303,14 +345,16 @@ func (r *BackupReader) readLine(data []byte) (BackedUpEvent, bool, error) {
 
 	if !r.hasStarted {
 		r.hasStarted = true
-		r.read.FormatVersion = BackupFormatVersion2
+		r.formatVersion = BackupFormatVersion2
 		if line.Type != itemBackup && line.Payload != nil {
-			r.read.FormatVersion = BackupFormatVersion1
+			r.formatVersion = BackupFormatVersion1
+			r.backups = []Backup{{FormatVersion: BackupFormatVersion1}}
+			r.state = stateInBackup
 		}
 	}
 
-	if r.read.FormatVersion == BackupFormatVersion1 {
-		return readLineOfVersion1(line)
+	if r.formatVersion == BackupFormatVersion1 {
+		return r.readLineOfVersion1(line)
 	}
 
 	return r.readLineOfVersion2(line)
@@ -337,16 +381,27 @@ type backedUpEventOfVersion1 struct {
 
 // readLineOfVersion1 reads a line of a backup in the format of
 // /api/v1/backup: an event, the schema of an event type, or an error the
-// database ran into while backing up.
-func readLineOfVersion1(line backupLine) (BackedUpEvent, bool, error) {
+// database ran into while backing up, which makes the backup incomplete, and
+// after which EventSourcingDB writes nothing more.
+func (r *BackupReader) readLineOfVersion1(line backupLine) (BackedUpEvent, bool, error) {
+	if r.state == stateAfterFailure {
+		return BackedUpEvent{}, false, errors.New("the backup holds a line after the error the database wrote into it")
+	}
+
 	switch line.Type {
 	case itemEvent:
 	case "schema", "eventType":
 		return BackedUpEvent{}, false, nil
 	case itemError:
 		var message string
-		_ = json.Unmarshal(line.Payload, &message)
-		return BackedUpEvent{}, false, fmt.Errorf("the database could not back up everything: %s", message)
+		err := json.Unmarshal(line.Payload, &message)
+		if err != nil || message == "" {
+			message = string(line.Payload)
+		}
+		r.current().Failure = message
+		r.state = stateAfterFailure
+
+		return BackedUpEvent{}, false, nil
 	default:
 		return BackedUpEvent{}, false, fmt.Errorf("unknown type %q", line.Type)
 	}
@@ -398,33 +453,39 @@ type eventOfVersion2 struct {
 }
 
 // readLineOfVersion2 reads a line of a backup in the format of create-backup,
-// and checks that it stands where the format puts it: the backup item first,
-// the end item last, and everything else in between.
+// and checks that it stands where the format puts it, as EventSourcingDB does
+// when it restores a sequence of backups: every backup begins with its backup
+// item, and ends with its end item, which only the backup item of the next
+// backup may follow. After an error the database wrote into a backup, it
+// writes its end item only.
 func (r *BackupReader) readLineOfVersion2(line backupLine) (BackedUpEvent, bool, error) {
-	if r.hasEnded {
+	switch r.state {
+	case stateBeforeBackup:
 		if line.Type == itemBackup {
-			return BackedUpEvent{}, false, errors.New("the file holds a further backup after the end of the first one, so give every backup as a file of its own")
+			r.backups = append(r.backups, Backup{FormatVersion: BackupFormatVersion2})
+			r.state = stateInBackup
+
+			return BackedUpEvent{}, false, r.readBackupItem(line.Data)
 		}
 
-		return BackedUpEvent{}, false, fmt.Errorf("the backup holds an item of type %q after its end item", line.Type)
-	}
-
-	if !r.hasBegun && line.Type != itemBackup {
-		if line.Type == itemError {
+		switch {
+		case len(r.backups) > 0:
+			return BackedUpEvent{}, false, fmt.Errorf("the backup holds an item of type %q after its end item", line.Type)
+		case line.Type == itemError:
 			return BackedUpEvent{}, false, fmt.Errorf("the file holds no backup, but the error the database answered with instead: %s", failureOf(line.Data))
+		default:
+			return BackedUpEvent{}, false, fmt.Errorf("expected a backup item to begin the backup, but got one of type %q", line.Type)
 		}
 
-		return BackedUpEvent{}, false, fmt.Errorf("expected a backup item to begin the backup, but got one of type %q", line.Type)
+	case stateAfterFailure:
+		if line.Type != itemEnd {
+			return BackedUpEvent{}, false, fmt.Errorf("the backup holds an item of type %q after the error the database wrote into it", line.Type)
+		}
 	}
 
 	switch line.Type {
 	case itemBackup:
-		if r.hasBegun {
-			return BackedUpEvent{}, false, errors.New("the backup holds a second backup item before its end item")
-		}
-		r.hasBegun = true
-
-		return BackedUpEvent{}, false, r.readBackupItem(line.Data)
+		return BackedUpEvent{}, false, errors.New("the backup holds a second backup item before its end item")
 
 	case itemEventSchema:
 		return BackedUpEvent{}, false, nil
@@ -460,17 +521,19 @@ func (r *BackupReader) readLineOfVersion2(line backupLine) (BackedUpEvent, bool,
 		if err != nil {
 			return BackedUpEvent{}, false, fmt.Errorf("the item that names the event the backup ended at is invalid: %w", err)
 		}
-		r.read.NamedEnd = namedEnd
+		r.current().NamedEnd = namedEnd
 
 		return BackedUpEvent{}, false, nil
 
 	case itemError:
-		r.read.Failure = failureOf(line.Data)
+		r.current().Failure = failureOf(line.Data)
+		r.state = stateAfterFailure
 
 		return BackedUpEvent{}, false, nil
 
 	case itemEnd:
-		r.hasEnded = true
+		r.current().IsComplete = r.current().Failure == ""
+		r.state = stateBeforeBackup
 
 		return BackedUpEvent{}, false, nil
 
@@ -481,7 +544,8 @@ func (r *BackupReader) readLineOfVersion2(line backupLine) (BackedUpEvent, bool,
 
 // readBackupItem reads the first item of a backup in the format of
 // create-backup, which names the version of its format, and the event the
-// backup follows on, if it is an incremental one. The version is compared as
+// backup follows on, if it is an incremental one. Every backup of a file names
+// its own version. The version is compared as
 // it is written, as EventSourcingDB does, which restores no backup that names
 // another version than 2, or none.
 func (r *BackupReader) readBackupItem(data json.RawMessage) error {
@@ -512,7 +576,7 @@ func (r *BackupReader) readBackupItem(data json.RawMessage) error {
 	if err != nil {
 		return fmt.Errorf("the event the backup follows on is invalid: %w", err)
 	}
-	r.read.FollowsOn = followsOn
+	r.current().FollowsOn = followsOn
 
 	return nil
 }

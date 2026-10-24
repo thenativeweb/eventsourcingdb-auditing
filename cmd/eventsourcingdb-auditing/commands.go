@@ -76,7 +76,8 @@ Backups are read in either format, as EventSourcingDB writes them on
 /api/v1/backup and on /api/v2/management/create-backup. Give --backup once for
 every backup of a chain, a full backup and the incremental ones that follow on
 it, in any order: they are ordered by the events they follow on, and checked as
-one.
+one. A file may also hold several backups in the format of create-backup one
+after another, as EventSourcingDB restores them.
 
 The time stamps of the anchors are checked against the EU trusted lists, which
 are fetched from where they are published, or read from a directory that

@@ -266,12 +266,14 @@ func backupOfAChain(t *testing.T, backup string) BackupOfAChain {
 	for _, err := range reader.Events() {
 		require.NoError(t, err)
 	}
-	require.True(t, reader.Backup().IsComplete)
+	require.Len(t, reader.Backups(), 1)
+	read := reader.Backups()[0]
+	require.True(t, read.IsComplete)
 
 	return BackupOfAChain{
 		Lines:     strings.Split(strings.TrimSpace(backup), "\n"),
-		FollowsOn: reader.Backup().FollowsOn,
-		EndedAt:   reader.Backup().EndedAt(),
+		FollowsOn: read.FollowsOn,
+		EndedAt:   read.EndedAt(),
 	}
 }
 

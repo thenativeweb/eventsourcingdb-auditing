@@ -72,11 +72,23 @@ type Sources struct {
 	ReceiptsDirectory string   `json:"receiptsDirectory,omitempty"`
 }
 
-// Backup names a backup, and its SHA-256, so that it is clear which one was
-// checked.
+// Backup names a file of backups, and its SHA-256, so that it is clear which
+// one was checked, together with the backups it holds one after another, if
+// it holds more than one.
 type Backup struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path   string       `json:"path"`
+	SHA256 string       `json:"sha256"`
+	Parts  []BackupPart `json:"parts,omitempty"`
+}
+
+// BackupPart is one of several backups that a file holds, by its number
+// within the file, from 1 on, with the ID of the event it follows on, which
+// is empty for a full backup, and the ID of the event it ended at, which is
+// empty for a full backup without events.
+type BackupPart struct {
+	Number    int    `json:"number"`
+	FollowsOn string `json:"followsOn,omitempty"`
+	EndedAt   string `json:"endedAt,omitempty"`
 }
 
 type Events struct {

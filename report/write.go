@@ -30,7 +30,7 @@ func WriteText(out io.Writer, report Report) error {
 	switch {
 	case len(report.Sources.Backups) > 0:
 		label := "Backup "
-		if len(report.Sources.Backups) > 1 {
+		if len(report.Sources.Backups) > 1 || len(report.Sources.Backups[0].Parts) > 1 {
 			label = "Backups"
 		}
 		for i, backup := range report.Sources.Backups {
@@ -40,6 +40,9 @@ func WriteText(out io.Writer, report Report) error {
 				fmt.Fprintf(&text, "                    %s\n", backup.Path)
 			}
 			fmt.Fprintf(&text, "                    SHA-256 %s\n", backup.SHA256)
+			for _, part := range backup.Parts {
+				fmt.Fprintf(&text, "                    %s\n", describePart(part))
+			}
 		}
 	case report.Sources.Database != "":
 		fmt.Fprintf(&text, "Database            %s\n", report.Sources.Database)
@@ -101,6 +104,21 @@ func WriteText(out io.Writer, report Report) error {
 	_, err := io.WriteString(out, text.String())
 
 	return err
+}
+
+// describePart describes one of several backups a file holds.
+func describePart(part BackupPart) string {
+	start := "full"
+	if part.FollowsOn != "" {
+		start = "follows on event " + part.FollowsOn
+	}
+
+	end := "without events"
+	if part.EndedAt != "" && part.EndedAt != part.FollowsOn {
+		end = "ended at event " + part.EndedAt
+	}
+
+	return fmt.Sprintf("part %d, %s, %s", part.Number, start, end)
 }
 
 func formatTime(value time.Time) string {

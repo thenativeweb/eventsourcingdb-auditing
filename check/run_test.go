@@ -451,6 +451,69 @@ func TestRunWithBackups(t *testing.T) {
 		})
 	}
 
+	t.Run("ends with the exit code for gaps for a backup of /api/v1/backup with an error, but with no findings if a complete backup holds the events after it", func(t *testing.T) {
+		lines := strings.SplitAfter(databasetest.FullBackupOfAPIVersion1, "\n")
+		withError := strings.Join(append(lines[:4:4], `{"type":"error","payload":"failed to create backup"}`+"\n"), "")
+
+		chain := newChainOfBackups(t)
+		v1 := chain.write(t, "v1.ndjson", withError)
+
+		alone, err := chain.run(t, v1)
+
+		require.NoError(t, err)
+		require.Len(t, alone.Findings, 1)
+		assert.Equal(t, verify.SeverityGap, alone.Findings[0].Severity)
+		assert.Contains(t, alone.Findings[0].Message, "v1.ndjson is incomplete, since the database could not back up everything (failed to create backup), so events after event 2 may be missing from it")
+		assert.Equal(t, report.ExitCodeGaps, alone.ExitCode())
+
+		covered, err := chain.run(t, v1, chain.write(t, "full-later.ndjson", databasetest.LaterFullBackup))
+
+		require.NoError(t, err)
+		require.Len(t, covered.Findings, 1)
+		assert.Equal(t, verify.SeverityNotice, covered.Findings[0].Severity)
+		assert.Contains(t, covered.Findings[0].Message, "but complete backups hold every event of the chain after event 2")
+		assert.Equal(t, report.ExitCodeNoFindings, covered.ExitCode())
+	})
+
+	t.Run("reads several backups one after another in one file, as cat writes them, together with separate files in any order, and names the file once with its backups", func(t *testing.T) {
+		chain := newChainOfBackups(t)
+		concatenated := chain.write(t, "chain.ndjson", databasetest.FullBackup+databasetest.FirstIncrementalBackup)
+		second := chain.write(t, "incremental-2.ndjson", databasetest.SecondIncrementalBackup)
+		later := chain.write(t, "full-later.ndjson", databasetest.LaterFullBackup)
+
+		content, err := os.ReadFile(concatenated)
+		require.NoError(t, err)
+		digest := sha256.Sum256(content)
+
+		for _, order := range [][]string{{concatenated, second, later}, {second, later, concatenated}, {later, concatenated, second}} {
+			built, err := chain.run(t, order...)
+
+			require.NoError(t, err)
+			assert.Empty(t, built.Findings)
+			assert.Equal(t, report.ExitCodeNoFindings, built.ExitCode())
+			assert.Equal(t, 10, built.Events.Count)
+			require.Len(t, built.Sources.Backups, 3)
+			assert.Equal(t, report.Backup{
+				Path:   concatenated,
+				SHA256: hex.EncodeToString(digest[:]),
+				Parts:  []report.BackupPart{{Number: 1, EndedAt: "3"}, {Number: 2, FollowsOn: "3", EndedAt: "6"}},
+			}, built.Sources.Backups[0])
+			assert.Equal(t, []string{later, second}, []string{built.Sources.Backups[1].Path, built.Sources.Backups[2].Path})
+		}
+	})
+
+	t.Run("ends with the exit code for a manipulation for a manipulated backup in a file with several, and names it by its number", func(t *testing.T) {
+		chain := newChainOfBackups(t)
+		concatenated := chain.write(t, "chain.ndjson", databasetest.FullBackup+strings.Replace(databasetest.FirstIncrementalBackup, `"hash":"esdb:hash:v2:da03`, `"hash":"esdb:hash:v2:ea03`, 1)+databasetest.SecondIncrementalBackup)
+
+		built, err := chain.run(t, concatenated)
+
+		require.NoError(t, err)
+		require.Len(t, built.Findings, 1)
+		assert.Contains(t, built.Findings[0].Message, "Backup "+concatenated+", part 2 follows on event 3 with the hash esdb:hash:v2:ea03")
+		assert.Equal(t, report.ExitCodeManipulation, built.ExitCode())
+	})
+
 	t.Run("ends with the same result, whatever order backups that overlap are given in, even if the signatures of their events differ", func(t *testing.T) {
 		chain := newChainOfBackups(t)
 		v1 := chain.write(t, "v1.ndjson", databasetest.FullBackupOfAPIVersion1)
@@ -580,12 +643,13 @@ func createBackup(t *testing.T, container *eventsourcingdbtest.Container, follow
 	for _, err := range reader.Events() {
 		require.NoError(t, err)
 	}
-	require.True(t, reader.Backup().IsComplete)
+	require.Len(t, reader.Backups(), 1)
+	require.True(t, reader.Backups()[0].IsComplete)
 
 	path := filepath.Join(t.TempDir(), "backup.ndjson")
 	require.NoError(t, os.WriteFile(path, backup, 0o600))
 
-	return path, reader.Backup().EndedAt()
+	return path, reader.Backups()[0].EndedAt()
 }
 
 func TestRunWithBackupsOfARunningDatabase(t *testing.T) {

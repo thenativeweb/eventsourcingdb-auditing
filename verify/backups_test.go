@@ -164,6 +164,30 @@ func gap(check, message string) verify.Finding {
 	return verify.Finding{Severity: verify.SeverityGap, Check: check, Message: message}
 }
 
+func notice(check, message string) verify.Finding {
+	return verify.Finding{Severity: verify.SeverityNotice, Check: check, Message: message}
+}
+
+// withV1Error returns the backup of /api/v1/backup with an error line in place
+// of its last event, as EventSourcingDB writes it when it fails to back up
+// everything.
+func withV1Error() namedBackup {
+	lines := strings.SplitAfter(fullBackupOfV1.content, "\n")
+
+	return namedBackup{name: fullBackupOfV1.name, content: strings.Join(slices.Concat(lines[:4], []string{`{"type":"error","payload":"failed to create backup"}` + "\n"}), "")}
+}
+
+// concatenated returns the backups one after another in one file, as cat
+// writes them.
+func concatenated(name string, backups ...namedBackup) namedBackup {
+	var content strings.Builder
+	for _, backup := range backups {
+		content.WriteString(backup.content)
+	}
+
+	return namedBackup{name: name, content: content.String()}
+}
+
 func TestVerifyBackups(t *testing.T) {
 	t.Run("finds nothing in a full backup and two incremental ones that follow on it", func(t *testing.T) {
 		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup, secondIncrementalBackup)
@@ -481,14 +505,153 @@ func TestVerifyBackups(t *testing.T) {
 		assert.Contains(t, result.Findings[0].Message, "so events after event 8 may be missing from it")
 	})
 
-	t.Run("names an incomplete backup as a gap, even if other backups hold its events", func(t *testing.T) {
-		withoutEnd := firstIncrementalBackup.withoutLines(7, -1)
+	t.Run("names an incomplete backup as a notice, if complete backups hold every event of the chain after its last one", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			backups []namedBackup
+			message string
+		}{
+			{
+				name:    "an incremental backup without its end item, before a complete one that follows on it",
+				backups: []namedBackup{fullBackup, firstIncrementalBackup.withoutLines(7, -1), secondIncrementalBackup},
+				message: "Backup incremental-1.ndjson is incomplete, since it was cut short before its end item, but complete backups hold every event of the chain after event 6",
+			},
+			{
+				name:    "a full backup cut short, next to a complete full one",
+				backups: []namedBackup{fullBackup.withoutLines(4, -1), laterFullBackup},
+				message: "Backup full.ndjson is incomplete, since it was cut short before its end item, but complete backups hold every event of the chain after event 1",
+			},
+			{
+				name:    "an incremental backup cut short in the middle of a line, next to a complete full one",
+				backups: []namedBackup{laterFullBackup, {firstIncrementalBackup.name, firstIncrementalBackup.content[:strings.Index(firstIncrementalBackup.content, `"id":"5"`)]}},
+				message: "Backup incremental-1.ndjson is incomplete, since it was cut short before its end item, but complete backups hold every event of the chain after event 4",
+			},
+			{
+				name:    "a backup of /api/v1/backup with an error, next to a complete full one",
+				backups: []namedBackup{withV1Error(), laterFullBackup},
+				message: "Backup v1.ndjson is incomplete, since the database could not back up everything (failed to create backup), but complete backups hold every event of the chain after event 2",
+			},
+			{
+				name:    "a full backup without its end item, next to a complete one that ends at the same event",
+				backups: []namedBackup{fullBackup.withoutLines(7, -1), fullBackupOfV1},
+				message: "Backup full.ndjson is incomplete, since it was cut short before its end item, but complete backups hold every event of the chain after event 3",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				custodian := custodianResult(nil)
+				custodian.Intervals = confirmedChain().Intervals
 
-		result := verifyBackups(t, confirmedChain(), fullBackup, withoutEnd, secondIncrementalBackup)
+				result := verifyBackups(t, custodian, test.backups...)
+
+				assertFindings(t, result,
+					notice(verify.CheckBackups, test.message),
+				)
+			})
+		}
+	})
+
+	t.Run("names an incomplete backup as a gap, if events after its last one are in none of the complete backups", func(t *testing.T) {
+		cutShort := firstIncrementalBackup.withoutLines(4, -1)
+
+		result := verifyBackups(t, confirmedChain(), fullBackup, cutShort, secondIncrementalBackup)
 
 		assertFindings(t, result,
-			gap(verify.CheckBackups, "Backup incremental-1.ndjson is incomplete"),
+			gap(verify.CheckBackups, "Events 5 to 6 are in none of the backups, so they could not be checked"),
+			gap(verify.CheckBackups, "Backup incremental-1.ndjson is incomplete, since it was cut short before its end item, so events after event 4 may be missing from it"),
 		)
+	})
+
+	t.Run("names a backup of /api/v1/backup with an error as a gap, and checks the events before the error", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), withV1Error())
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup v1.ndjson is incomplete, since the database could not back up everything (failed to create backup), so events after event 2 may be missing from it"),
+		)
+		assert.Equal(t, 3, result.EventCount)
+	})
+
+	t.Run("reads several backups one after another in one file, every one as a backup of its own", func(t *testing.T) {
+		chain := concatenated("chain.ndjson", fullBackup, firstIncrementalBackup, secondIncrementalBackup)
+
+		result := verifyBackups(t, confirmedChain(), chain)
+
+		assertFindings(t, result)
+		assert.Equal(t, 10, result.EventCount)
+		digest := sha256.Sum256([]byte(chain.content))
+		require.Len(t, result.Backups, 1)
+		assert.Equal(t, "chain.ndjson", result.Backups[0].Name)
+		assert.Equal(t, hex.EncodeToString(digest[:]), result.Backups[0].SHA256)
+		require.Len(t, result.Backups[0].Parts, 3)
+		for i, part := range result.Backups[0].Parts {
+			assert.Equal(t, i+1, part.Number)
+			assert.Equal(t, []string{"3", "6", "9"}[i], part.EndedAt.ID)
+		}
+		assert.Nil(t, result.Backups[0].Parts[0].FollowsOn)
+		assert.Equal(t, "3", result.Backups[0].Parts[1].FollowsOn.ID)
+	})
+
+	t.Run("orders the backups of a file with the ones of other files, whatever order they are given in", func(t *testing.T) {
+		chain := concatenated("chain.ndjson", secondIncrementalBackup, fullBackup)
+
+		for _, order := range permutationsOf([]namedBackup{chain, firstIncrementalBackup, laterFullBackup}) {
+			result := verifyBackups(t, confirmedChain(), order...)
+
+			assertFindings(t, result)
+			assert.Equal(t, 10, result.EventCount)
+			assert.Equal(t, []string{"chain.ndjson", "full-later.ndjson", "incremental-1.ndjson"}, namesOf(result))
+			assert.Equal(t, []int{1, 2}, []int{result.Backups[0].Parts[0].Number, result.Backups[0].Parts[1].Number})
+		}
+	})
+
+	t.Run("finds manipulations in one of the backups of a file, and names it by its number", func(t *testing.T) {
+		for _, test := range []struct {
+			name     string
+			backups  []namedBackup
+			findings []verify.Finding
+		}{
+			{
+				name:     "a changed event",
+				backups:  []namedBackup{concatenated("chain.ndjson", fullBackup, firstIncrementalBackup.changed(t, 4, `"title":"Ubik"`, `"title":"Valis"`), secondIncrementalBackup)},
+				findings: []verify.Finding{manipulation(verify.CheckEventHashes, "Event 5 has been changed")},
+			},
+			{
+				name:     "another hash to follow on",
+				backups:  []namedBackup{concatenated("chain.ndjson", fullBackup, firstIncrementalBackup.changed(t, 0, `"hash":"esdb:hash:v2:da03`, `"hash":"esdb:hash:v2:ea03`), secondIncrementalBackup)},
+				findings: []verify.Finding{manipulation(verify.CheckBackups, "Backup chain.ndjson, part 2 follows on event 3 with the hash esdb:hash:v2:ea0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0, but chain.ndjson, part 1 holds that event with the hash esdb:hash:v2:da0353d7b49d540e4da98000a726116923477ceaf3cb72628fde8c4ea829c9d0")},
+			},
+			{
+				name:     "an event that one of them lacks, which another file holds",
+				backups:  []namedBackup{concatenated("chain.ndjson", fullBackup, firstIncrementalBackup.withoutLines(4, 5), secondIncrementalBackup), laterFullBackup},
+				findings: []verify.Finding{manipulation(verify.CheckBackups, "Backup chain.ndjson, part 2 lacks event 5, which lies between its start and the event it ended at, so the event has been removed from it")},
+			},
+			{
+				name:    "an event that differs from the one another file holds",
+				backups: []namedBackup{concatenated("chain.ndjson", fullBackup, firstIncrementalBackup), laterFullBackup.changed(t, 8, `"title":"Ubik"`, `"title":"Valis"`)},
+				findings: []verify.Finding{
+					manipulation(verify.CheckBackups, "Event 5 is not the same in full-later.ndjson and in chain.ndjson, part 2, which differ in data"),
+					manipulation(verify.CheckEventHashes, "Event 5 has been changed"),
+				},
+			},
+			{
+				name:     "the last backup of a file without its end item",
+				backups:  []namedBackup{concatenated("chain.ndjson", fullBackup, firstIncrementalBackup, secondIncrementalBackup.withoutLines(7, -1))},
+				findings: []verify.Finding{gap(verify.CheckBackups, "Backup chain.ndjson, part 3 is incomplete, since it was cut short before its end item, so events after event 9 may be missing from it")},
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				result := verifyBackups(t, confirmedChain(), test.backups...)
+
+				assertFindings(t, result, test.findings...)
+			})
+		}
+	})
+
+	t.Run("fails on several backups in one file where one begins before the one before it ended, and names the file", func(t *testing.T) {
+		chain := concatenated("chain.ndjson", fullBackup.withoutLines(7, -1), firstIncrementalBackup)
+
+		_, err := verify.VerifyBackups(sourcesOf(chain), confirmedChain(), afterTheLastConfirmation)
+
+		assert.ErrorContains(t, err, "failed to read the backup chain.ndjson: line 8 of the backup: the backup holds a second backup item before its end item")
 	})
 
 	t.Run("finds a backup that names another event as the one it ended at than the one it ended at", func(t *testing.T) {
