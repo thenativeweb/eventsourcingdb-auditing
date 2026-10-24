@@ -52,11 +52,12 @@ $ eventsourcingdb-auditing verify \
     --receipts-directory ./receipts
 ```
 
-A backup of `/api/v1/backup` counts as a full backup that ends at its last event, so incremental backups may follow on it as well. The tool checks the events of all backups as one, every event once, and it checks where the backups meet:
+A backup of `/api/v1/backup` counts as a full backup that ends at its last event, so incremental backups may follow on it as well. A backup may also come from a pipe or a process substitution, such as `--backup <(zcat full.ndjson.gz)`, which the tool copies into a temporary file once, since it reads every backup twice. The tool checks the events of all backups as one, every event once, and it checks where the backups meet:
 
 - Events that are in none of the backups, because the chain starts with an incremental backup, or because the backups do not meet, are a gap in protection, with their exact span, for example *Events 0 to 4711 are in none of the backups, so they could not be checked*. Everything else is checked fully, including that the first event after such a span follows on the event the backup names.
 - An incremental backup that follows on an event with another hash than the backup before it holds that event with is a manipulation.
-- Backups may overlap, as two full backups do, but an event that several backups hold has to be the same in all of them, including its hash and its signature. If it is not, that is a manipulation, which names both backups.
+- Every backup has to hold every event from the one after the event it follows on, or from the first one, up to the one it ended at. An event it lacks in between has been removed from it, which is a manipulation that names the backup, even if another backup holds that event.
+- Backups may overlap, as two full backups do, but an event that several backups hold has to be the same in all of them, in everything its hash covers, and in its hash. If it is not, that is a manipulation, which names both backups. The signature is left out, since EventSourcingDB signs an event whenever it hands it out, with the key it has then, so it differs between backups taken before and after the key changed.
 - A backup in the format of create-backup that lacks its end item, or holds an error, is incomplete. Its events are checked, and the backup is named as a gap in protection.
 - A backup in the format of create-backup that names a version of its format the tool does not know can not be read reliably, so the verification is not run, and the tool names the backup.
 
@@ -72,7 +73,7 @@ Instead of backups, the tool can read the running database with `--esdb-url` and
 
 EventSourcingDB writes hashes of version 2 from version 1.3 on, which also cover the trace context of an event, and wrote hashes of version 1 before. Events keep the version they were written with, so a database may hold both, and the tool checks every event in the version its own hash names. An event whose hash is of a version the tool does not know yet is not reported as changed, but as a gap in protection, since whether it has been changed can not be told.
 
-The report names what was checked, including every backup with its SHA-256, in the order of the chain, and lists every finding, grouped into manipulations, gaps in protection, and notices. With `--output json`, it is written as JSON. The exit code is `0` if nothing was found, `1` if a manipulation was found, `2` if only gaps in protection were found, and `3` if the verification could not be run.
+The report names what was checked, including every backup with its SHA-256, in the order of the chain, and lists every finding, grouped into manipulations, gaps in protection, and notices. With `--output json`, it is written as JSON, which names the backups in the list `sources.backups`, in place of the single `sources.backup` of earlier versions. The exit code is `0` if nothing was found, `1` if a manipulation was found, `2` if only gaps in protection were found, and `3` if the verification could not be run.
 
 The EU trusted lists are fetched from where they are published: the list of the lists from the European Commission, and the list of the country of every time stamping authority. Their signatures are checked against the certificates the Commission has announced in the Official Journal. A time stamp that was not issued by a qualified service counts as a notice, since it still proves when an anchor existed, only without the legal weight of a qualified one. The report names the state of the lists it relied on. To verify without network, download the lists first, and read them from that directory:
 

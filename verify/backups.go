@@ -48,7 +48,9 @@ type BackupsResult struct {
 
 // VerifyBackups checks the events of a chain of backups, as if they came from
 // a single one. It orders the backups by the events they follow on, whatever
-// order they are given in: full backups first, then the incremental ones. An
+// order they are given in: full backups first, then the incremental ones.
+// Every backup has to hold every event from the one after the event it
+// follows on, or from the first one, up to the one it ended at, an
 // incremental backup has to follow on an event that the backups before it
 // hold with the same hash, and an event that several backups hold has to be
 // the same in all of them, or else it is a manipulation. A span of events
@@ -116,6 +118,17 @@ type backupPart struct {
 	followsOnID   uint64
 	hasEndedAt    bool
 	endedAtID     uint64
+
+	// lacking are the spans of events, by their IDs, that the backup lacks
+	// between the event it follows on, or its start, and the one it ended
+	// at.
+	lacking []idSpan
+}
+
+// idSpan is a span of events by their IDs, from first to last, including
+// both.
+type idSpan struct {
+	firstID, lastID uint64
 }
 
 // openedBackup is a backup that is being read, with its SHA-256, which
@@ -156,7 +169,9 @@ func (o *openedBackup) digest() (string, error) {
 
 // scanBackup reads a backup for the first time, to learn where it starts and
 // where it ends, and checks that the IDs of its events are numbers, since a
-// backup is placed in the chain by them.
+// backup is placed in the chain by them. It notes the events the backup lacks
+// between its start and its end, which another backup that holds them does
+// not make up for, since they have been removed from this one.
 func scanBackup(index int, source BackupSource) (*backupPart, error) {
 	opened, err := openBackup(source)
 	if err != nil {
@@ -164,15 +179,36 @@ func scanBackup(index int, source BackupSource) (*backupPart, error) {
 	}
 	defer opened.file.Close()
 
+	part := &backupPart{index: index, source: source}
+
+	hasStarted, nextID := false, uint64(0)
 	for event, err := range opened.reader.Events() {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read the backup %s: %w", source.Name, err)
 		}
 
-		_, err = strconv.ParseUint(event.ID, 10, 64)
+		eventID, err := strconv.ParseUint(event.ID, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read the backup %s: event %q has no valid ID", source.Name, event.ID)
 		}
+
+		// The item that names the event an incremental backup follows on
+		// comes before its first event.
+		if !hasStarted {
+			hasStarted = true
+			err = part.readFollowsOn(opened.reader.Backup())
+			if err != nil {
+				return nil, err
+			}
+			if part.isIncremental {
+				nextID = part.followsOnID + 1
+			}
+		}
+
+		if eventID > nextID {
+			part.lacking = append(part.lacking, idSpan{firstID: nextID, lastID: eventID - 1})
+		}
+		nextID = max(nextID, eventID+1)
 	}
 
 	digest, err := opened.digest()
@@ -180,14 +216,10 @@ func scanBackup(index int, source BackupSource) (*backupPart, error) {
 		return nil, err
 	}
 
-	part := &backupPart{index: index, source: source, backup: opened.reader.Backup(), sha256: digest}
-
-	if followsOn := part.backup.FollowsOn; followsOn != nil {
-		part.isIncremental = true
-		part.followsOnID, err = strconv.ParseUint(followsOn.ID, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read the backup %s: it follows on event %q, which is no event ID", source.Name, followsOn.ID)
-		}
+	part.backup, part.sha256 = opened.reader.Backup(), digest
+	err = part.readFollowsOn(part.backup)
+	if err != nil {
+		return nil, err
 	}
 
 	if endedAt := part.backup.EndedAt(); endedAt != nil {
@@ -198,10 +230,28 @@ func scanBackup(index int, source BackupSource) (*backupPart, error) {
 	return part, nil
 }
 
+// readFollowsOn takes the event that an incremental backup follows on from
+// what the backup tells about itself.
+func (p *backupPart) readFollowsOn(backup database.Backup) error {
+	followsOn := backup.FollowsOn
+	if followsOn == nil {
+		return nil
+	}
+
+	followsOnID, err := strconv.ParseUint(followsOn.ID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("failed to read the backup %s: it follows on event %q, which is no event ID", p.source.Name, followsOn.ID)
+	}
+	p.isIncremental, p.followsOnID = true, followsOnID
+
+	return nil
+}
+
 // orderParts orders the backups of a chain: full backups first, then the
 // incremental ones by the event they follow on, and among those that start at
-// the same event, the ones that end earlier first, and else in the order they
-// were given in.
+// the same event, the ones that end earlier first, and else by their names
+// and their contents, so that the order does not depend on the one they were
+// given in.
 func orderParts(parts []*backupPart) {
 	slices.SortStableFunc(parts, func(left, right *backupPart) int {
 		if left.isIncremental != right.isIncremental {
@@ -220,6 +270,12 @@ func orderParts(parts []*backupPart) {
 			return -1
 		}
 		if order := cmp.Compare(left.endedAtID, right.endedAtID); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(left.source.Name, right.source.Name); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(left.sha256, right.sha256); order != 0 {
 			return order
 		}
 
@@ -271,6 +327,9 @@ func planChain(parts []*backupPart) chainPlan {
 			isReaching, reach = true, part.endedAtID
 		}
 
+		for _, lacking := range part.lacking {
+			plan.found.addLacking(part, lacking)
+		}
 		if !part.backup.IsComplete {
 			plan.found.addIncomplete(part)
 		}
@@ -302,6 +361,15 @@ func (f *findings) addUncovered(firstID, lastID uint64) {
 	}
 
 	f.add(SeverityGap, CheckBackups, "Events %d to %d are in none of the backups, so they could not be checked", firstID, lastID)
+}
+
+func (f *findings) addLacking(part *backupPart, lacking idSpan) {
+	if lacking.firstID == lacking.lastID {
+		f.add(SeverityManipulation, CheckBackups, "Backup %s lacks event %d, which lies between its start and the event it ended at, so the event has been removed from it", part.source.Name, lacking.firstID)
+		return
+	}
+
+	f.add(SeverityManipulation, CheckBackups, "Backup %s lacks events %d to %d, which lie between its start and the event it ended at, so the events have been removed from it", part.source.Name, lacking.firstID, lacking.lastID)
 }
 
 func (f *findings) addIncomplete(part *backupPart) {

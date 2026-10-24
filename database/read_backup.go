@@ -97,25 +97,24 @@ func (b Backup) EndedAt() *EventReference {
 }
 
 // BackedUpEvent is an event as a backup holds it: the event, checked, and
-// everything the backup holds of it, so that the same event in two backups
-// can be compared.
+// everything its hash covers, so that the same event in two backups can be
+// compared.
 type BackedUpEvent struct {
 	Event
 
-	content   eventContent
-	signature *string
-
-	// holdsSignature reports whether the format of the backup holds a
-	// signature, which only the one of create-backup does.
-	holdsSignature bool
+	content eventContent
 }
 
 // DifferencesFrom names the members in which an event differs from the same
 // event as another backup holds it: any member that a hash of either version
-// covers, its hash, and its signature, if both backups hold one, which only
-// backups in the format of create-backup do. A trace context that a backup
-// leaves out counts as the same as one that is null. The data is compared
-// byte for byte, as it was written.
+// covers, and its hash. A trace context that a backup leaves out counts as
+// the same as one that is null, and the data is compared byte for byte, as it
+// was written. The signature that a backup in the format of create-backup
+// holds is not part of the event, and is left out: EventSourcingDB does not
+// store it, but signs the hash anew whenever it hands out an event, with the
+// key it has then, if any, so the same event differs in its signature between
+// backups taken before and after the key changed. The comparison is the same
+// whichever event it starts from.
 func (e BackedUpEvent) DifferencesFrom(other BackedUpEvent) []string {
 	var differences []string
 	compare := func(member string, isSame bool) {
@@ -136,9 +135,6 @@ func (e BackedUpEvent) DifferencesFrom(other BackedUpEvent) []string {
 	compare("tracestate", isSameOptional(e.content.TraceState, other.content.TraceState))
 	compare("data", bytes.Equal(e.content.Data, other.content.Data))
 	compare("hash", e.Hash == other.Hash)
-	if e.holdsSignature && other.holdsSignature {
-		compare("signature", isSameOptional(e.signature, other.signature))
-	}
 
 	return differences
 }
@@ -373,7 +369,7 @@ func readLineOfVersion1(line backupLine) (BackedUpEvent, bool, error) {
 		TraceParent:     backedUp.Event.TraceParent,
 		TraceState:      backedUp.Event.TraceState,
 		Data:            backedUp.Event.Data,
-	}, backedUp.Hash, nil, false)
+	}, backedUp.Hash)
 	if err != nil {
 		return BackedUpEvent{}, false, err
 	}
@@ -382,9 +378,10 @@ func readLineOfVersion1(line backupLine) (BackedUpEvent, bool, error) {
 }
 
 // eventOfVersion2 is an event as a backup in the format of create-backup
-// holds it: flat, with its hash and its signature, and with null for a trace
-// context it does not have, and for the signature of a database that signs
-// nothing.
+// holds it: flat, with its hash, and with null for a trace context it does
+// not have. Its signature, which EventSourcingDB computes over the hash
+// whenever it hands out an event, is not part of the event, and is left
+// aside.
 type eventOfVersion2 struct {
 	SpecVersion     string          `json:"specversion"`
 	ID              string          `json:"id"`
@@ -398,7 +395,6 @@ type eventOfVersion2 struct {
 	TraceParent     *string         `json:"traceparent"`
 	TraceState      *string         `json:"tracestate"`
 	Hash            string          `json:"hash"`
-	Signature       *string         `json:"signature"`
 }
 
 // readLineOfVersion2 reads a line of a backup in the format of create-backup,
@@ -452,7 +448,7 @@ func (r *BackupReader) readLineOfVersion2(line backupLine) (BackedUpEvent, bool,
 			TraceParent:     backedUp.TraceParent,
 			TraceState:      backedUp.TraceState,
 			Data:            backedUp.Data,
-		}, backedUp.Hash, backedUp.Signature, true)
+		}, backedUp.Hash)
 		if err != nil {
 			return BackedUpEvent{}, false, err
 		}
@@ -555,7 +551,7 @@ func failureOf(data json.RawMessage) string {
 
 // newBackedUpEvent checks the hash of an event a backup holds, in the version
 // that its hash names.
-func newBackedUpEvent(content eventContent, hash string, signature *string, holdsSignature bool) (BackedUpEvent, error) {
+func newBackedUpEvent(content eventContent, hash string) (BackedUpEvent, error) {
 	if content.ID == "" || hash == "" {
 		return BackedUpEvent{}, errors.New("the event has no ID or no hash")
 	}
@@ -577,8 +573,6 @@ func newBackedUpEvent(content eventContent, hash string, signature *string, hold
 			HashMatches:          hashMatches(content, hash),
 			HashVersionIsUnknown: !isKnown,
 		},
-		content:        content,
-		signature:      signature,
-		holdsSignature: holdsSignature,
+		content: content,
 	}, nil
 }

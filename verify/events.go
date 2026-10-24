@@ -318,12 +318,10 @@ func (c *eventsCheck) spanBefore(eventID uint64) (uncoveredSpan, bool) {
 // that none of the backups holds, the event follows on the event that ends
 // the span, with the hash that the backup after it names, since the events of
 // the span were not read, and the link across the span is part of the gap
-// that the span is.
+// that the span is. Whether the backup after the span lacks events right
+// after the one it follows on, it tells itself.
 func (c *eventsCheck) checkChain(event database.Event, eventID uint64, span uncoveredSpan, isAfterSpan bool) {
 	if isAfterSpan {
-		if eventID != span.lastID+1 {
-			c.found.add(SeverityManipulation, CheckEventChain, "Event %s follows event %d, which its backup follows on, so the events between them are missing", event.ID, span.lastID)
-		}
 		if event.PredecessorHash != span.lastHash {
 			c.found.add(SeverityManipulation, CheckEventChain, "Event %s does not follow event %d, which its backup follows on, since it names another predecessor hash", event.ID, span.lastID)
 		}

@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -417,6 +419,13 @@ func TestRunWithBackups(t *testing.T) {
 			exitCode: report.ExitCodeManipulation,
 		},
 		{
+			name:     "ends with the exit code for a manipulation if a backup lacks an event, even though another backup holds it",
+			backups:  map[string]string{"full.ndjson": databasetest.FullBackup, "full-later.ndjson": strings.Replace(databasetest.LaterFullBackup, strings.SplitAfter(databasetest.LaterFullBackup, "\n")[5], "", 1)},
+			check:    verify.CheckBackups,
+			message:  "full-later.ndjson lacks event 2",
+			exitCode: report.ExitCodeManipulation,
+		},
+		{
 			name:     "ends with the exit code for a manipulation if an event was changed in one of the backups",
 			backups:  map[string]string{"full.ndjson": databasetest.FullBackup, "incremental-1.ndjson": strings.Replace(databasetest.FirstIncrementalBackup, `"title":"Ubik"`, `"title":"Valis"`, 1), "incremental-2.ndjson": databasetest.SecondIncrementalBackup},
 			check:    verify.CheckEventHashes,
@@ -442,6 +451,71 @@ func TestRunWithBackups(t *testing.T) {
 		})
 	}
 
+	t.Run("ends with the same result, whatever order backups that overlap are given in, even if the signatures of their events differ", func(t *testing.T) {
+		chain := newChainOfBackups(t)
+		v1 := chain.write(t, "v1.ndjson", databasetest.FullBackupOfAPIVersion1)
+		full := chain.write(t, "full.ndjson", databasetest.FullBackup)
+		later := chain.write(t, "full-later.ndjson", strings.Replace(databasetest.LaterFullBackup, `"signature":"esdb:signature:v1:7277`, `"signature":"esdb:signature:v1:0277`, 1))
+
+		for _, order := range [][]string{{v1, full, later}, {later, full, v1}, {full, v1, later}, {later, v1, full}} {
+			built, err := chain.run(t, order...)
+
+			require.NoError(t, err)
+			assert.Empty(t, built.Findings)
+			assert.Equal(t, report.ExitCodeNoFindings, built.ExitCode())
+			assert.Equal(t, []string{full, v1, later}, []string{built.Sources.Backups[0].Path, built.Sources.Backups[1].Path, built.Sources.Backups[2].Path})
+		}
+	})
+
+	t.Run("reads a backup that is no regular file, such as a pipe, once, and names it as it was given", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("pipes have no path on Windows")
+		}
+
+		temporary := t.TempDir()
+		t.Setenv("TMPDIR", temporary)
+
+		chain := newChainOfBackups(t)
+		path := pipeOf(t, databasetest.FullBackup)
+
+		built, err := chain.run(t,
+			path,
+			chain.write(t, "incremental-1.ndjson", databasetest.FirstIncrementalBackup),
+			chain.write(t, "incremental-2.ndjson", databasetest.SecondIncrementalBackup),
+		)
+
+		require.NoError(t, err)
+		assert.Empty(t, built.Findings)
+		assert.Equal(t, 10, built.Events.Count)
+		digest := sha256.Sum256([]byte(databasetest.FullBackup))
+		assert.Equal(t, report.Backup{Path: path, SHA256: hex.EncodeToString(digest[:])}, built.Sources.Backups[0])
+
+		copies, err := os.ReadDir(temporary)
+		require.NoError(t, err)
+		assert.Empty(t, copies, "the copy of the pipe is removed")
+	})
+
+	t.Run("removes the copy of a backup that is no regular file, if the verification fails", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("pipes have no path on Windows")
+		}
+
+		temporary := t.TempDir()
+		t.Setenv("TMPDIR", temporary)
+
+		chain := newChainOfBackups(t)
+		path := pipeOf(t, strings.Replace(databasetest.FullBackup, `"formatVersion":2`, `"formatVersion":3`, 1))
+
+		_, err := chain.run(t, path)
+
+		require.ErrorIs(t, err, database.ErrUnknownBackupFormat)
+		assert.ErrorContains(t, err, path)
+
+		copies, err := os.ReadDir(temporary)
+		require.NoError(t, err)
+		assert.Empty(t, copies, "the copy of the pipe is removed")
+	})
+
 	t.Run("fails on a backup that names a version of its format it does not know, and names that backup", func(t *testing.T) {
 		chain := newChainOfBackups(t)
 		unknown := chain.write(t, "incremental-1.ndjson", strings.Replace(databasetest.FirstIncrementalBackup, `"formatVersion":2`, `"formatVersion":3`, 1))
@@ -451,6 +525,25 @@ func TestRunWithBackups(t *testing.T) {
 		require.ErrorIs(t, err, database.ErrUnknownBackupFormat)
 		assert.ErrorContains(t, err, unknown)
 	})
+}
+
+// pipeOf returns the path of a pipe that hands out the given backup once, as
+// a process substitution does, which can not be read twice.
+func pipeOf(t *testing.T, backup string) string {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = reader.Close()
+	})
+
+	go func() {
+		_, _ = writer.WriteString(backup)
+		_ = writer.Close()
+	}()
+
+	return fmt.Sprintf("/dev/fd/%d", reader.Fd())
 }
 
 // createBackup takes a backup of the database on

@@ -533,8 +533,6 @@ func TestBackedUpEvent(t *testing.T) {
 			{"a removed trace context", databasetest.FullBackup, 2, 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE"`, `"traceparent":null,"tracestate":null`, []string{"traceparent", "tracestate"}, false},
 			{"a trace context that a hash of version 1 does not cover", databasetest.BackupWithHashesOfBothVersions, 0, 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-`, `"traceparent":"00-1af7651916cd43dd8448eb211c80319c-`, []string{"traceparent"}, true},
 			{"hash", databasetest.FullBackup, 5, 3, `"hash":"esdb:hash:v2:da03`, `"hash":"esdb:hash:v2:ea03`, []string{"hash"}, false},
-			{"signature", databasetest.FullBackup, 5, 3, `"signature":"esdb:signature:v1:9133`, `"signature":"esdb:signature:v1:0133`, []string{"signature"}, true},
-			{"a missing signature", databasetest.FullBackup, 5, 3, `"signature":"esdb:signature:v1:9133f5a2ef0c7df7567d1169d298b7c9b1dec9a976d920ecd64c07b0dccb8bbfb82e2e7265b39c4ebd137f0c638bfc65b3813048800322bbae198ff3ec7a840d"`, `"signature":null`, []string{"signature"}, true},
 		} {
 			t.Run(change.name, func(t *testing.T) {
 				original, _, err := backedUpEventsOf(t, change.backup)
@@ -544,6 +542,7 @@ func TestBackedUpEvent(t *testing.T) {
 
 				event := change.event
 				assert.Equal(t, change.differences, original[event].DifferencesFrom(changed[event]))
+				assert.Equal(t, change.differences, changed[event].DifferencesFrom(original[event]), "whichever event the comparison starts from")
 				assert.Equal(t, change.stillMatches, changed[event].HashMatches, "whether the hash still matches")
 				for i := range original {
 					if i != event {
@@ -554,15 +553,30 @@ func TestBackedUpEvent(t *testing.T) {
 		}
 	})
 
-	t.Run("does not compare the signature with a backup of /api/v1/backup, which holds none", func(t *testing.T) {
-		changed := changeEvent(t, databasetest.FullBackup, 5, `"signature":"esdb:signature:v1:9133`, `"signature":"esdb:signature:v1:0133`)
+	t.Run("leaves out the signature, which EventSourcingDB computes anew with the key it has whenever it hands out an event", func(t *testing.T) {
+		const signature = `"signature":"esdb:signature:v1:9133f5a2ef0c7df7567d1169d298b7c9b1dec9a976d920ecd64c07b0dccb8bbfb82e2e7265b39c4ebd137f0c638bfc65b3813048800322bbae198ff3ec7a840d"`
 
+		original, _, err := backedUpEventsOf(t, databasetest.FullBackup)
+		require.NoError(t, err)
 		ofVersion1, _, err := backedUpEventsOf(t, databasetest.FullBackupOfAPIVersion1)
 		require.NoError(t, err)
-		ofVersion2, _, err := backedUpEventsOf(t, changed)
-		require.NoError(t, err)
 
-		assert.Empty(t, ofVersion1[3].DifferencesFrom(ofVersion2[3]))
+		for _, test := range []struct {
+			name, new string
+		}{
+			{"of another key", `"signature":"esdb:signature:v1:0133f5a2ef0c7df7567d1169d298b7c9b1dec9a976d920ecd64c07b0dccb8bbfb82e2e7265b39c4ebd137f0c638bfc65b3813048800322bbae198ff3ec7a840d"`},
+			{"of a database that signs nothing", `"signature":null`},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				changed, _, err := backedUpEventsOf(t, changeEvent(t, databasetest.FullBackup, 5, signature, test.new))
+				require.NoError(t, err)
+
+				assert.Empty(t, original[3].DifferencesFrom(changed[3]))
+				assert.Empty(t, changed[3].DifferencesFrom(original[3]))
+				assert.Empty(t, ofVersion1[3].DifferencesFrom(changed[3]))
+				assert.True(t, changed[3].HashMatches)
+			})
+		}
 	})
 }
 

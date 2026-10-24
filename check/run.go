@@ -219,30 +219,86 @@ func hourOf(anchorJWS string) (time.Time, error) {
 // them. For backups, it names every one of them with its SHA-256, in the
 // order of the chain, so that the report names exactly which backups were
 // checked.
-func verifyEvents(ctx context.Context, options Options, custodianResult verify.CustodianResult, now time.Time, sources *report.Sources) (verify.EventsResult, error) {
+func verifyEvents(ctx context.Context, options Options, custodianResult verify.CustodianResult, now time.Time, sources *report.Sources) (result verify.EventsResult, err error) {
 	if options.Database != nil {
 		sources.Database = options.DatabaseURL
 		return verify.VerifyEvents(database.ReadDatabase(ctx, options.Database), custodianResult, now)
 	}
 
+	var copies []string
+	defer func() {
+		for _, copied := range copies {
+			removeErr := os.Remove(copied)
+			if removeErr != nil && err == nil {
+				err = fmt.Errorf("failed to remove the copy of a backup: %w", removeErr)
+			}
+		}
+	}()
+
 	backups := make([]verify.BackupSource, 0, len(options.BackupPaths))
 	for _, path := range options.BackupPaths {
+		readPath, isCopy, err := readablePathOf(path)
+		if isCopy {
+			copies = append(copies, readPath)
+		}
+		if err != nil {
+			return verify.EventsResult{}, err
+		}
+
 		backups = append(backups, verify.BackupSource{
 			Name: path,
 			Open: func() (io.ReadCloser, error) {
-				return os.Open(path)
+				return os.Open(readPath)
 			},
 		})
 	}
 
-	result, err := verify.VerifyBackups(backups, custodianResult, now)
+	backupsResult, err := verify.VerifyBackups(backups, custodianResult, now)
 	if err != nil {
 		return verify.EventsResult{}, err
 	}
 
-	for _, backup := range result.Backups {
+	for _, backup := range backupsResult.Backups {
 		sources.Backups = append(sources.Backups, report.Backup{Path: backup.Name, SHA256: backup.SHA256})
 	}
 
-	return result.EventsResult, nil
+	return backupsResult.EventsResult, nil
+}
+
+// readablePathOf returns the path that a backup can be read from twice, as
+// checking a chain of backups does: the path itself for a regular file, and
+// for anything else, such as a pipe or a process substitution, which can be
+// read only once, a copy in the directory for temporary files, which the
+// caller removes, as it tells. The SHA-256 of the copy is the one of the bytes
+// read from the path.
+func readablePathOf(path string) (string, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to open the backup %s: %w", path, err)
+	}
+	if info.Mode().IsRegular() {
+		return path, false, nil
+	}
+
+	source, err := os.Open(path)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to open the backup %s: %w", path, err)
+	}
+	defer source.Close()
+
+	copied, err := os.CreateTemp("", "eventsourcingdb-auditing-backup-*.ndjson")
+	if err != nil {
+		return "", false, fmt.Errorf("failed to copy the backup %s, which is no regular file: %w", path, err)
+	}
+
+	_, err = io.Copy(copied, source)
+	closeErr := copied.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return copied.Name(), true, fmt.Errorf("failed to copy the backup %s, which is no regular file: %w", path, err)
+	}
+
+	return copied.Name(), true, nil
 }

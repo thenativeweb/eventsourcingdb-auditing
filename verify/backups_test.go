@@ -139,6 +139,23 @@ func assertFindings(t *testing.T, result verify.BackupsResult, expected ...verif
 	}
 }
 
+// permutationsOf returns every order of the given backups.
+func permutationsOf(backups []namedBackup) [][]namedBackup {
+	if len(backups) <= 1 {
+		return [][]namedBackup{slices.Clone(backups)}
+	}
+
+	var permutations [][]namedBackup
+	for i := range backups {
+		rest := slices.Concat(backups[:i], backups[i+1:])
+		for _, permutation := range permutationsOf(rest) {
+			permutations = append(permutations, append([]namedBackup{backups[i]}, permutation...))
+		}
+	}
+
+	return permutations
+}
+
 func manipulation(check, message string) verify.Finding {
 	return verify.Finding{Severity: verify.SeverityManipulation, Check: check, Message: message}
 }
@@ -267,7 +284,99 @@ func TestVerifyBackups(t *testing.T) {
 
 		assertFindings(t, result)
 		assert.Equal(t, 10, result.EventCount)
-		assert.Equal(t, []string{"v1.ndjson", "full.ndjson", "full-later.ndjson", "incremental-1.ndjson", "incremental-2.ndjson"}, namesOf(result))
+		assert.Equal(t, []string{"full.ndjson", "v1.ndjson", "full-later.ndjson", "incremental-1.ndjson", "incremental-2.ndjson"}, namesOf(result))
+	})
+
+	t.Run("finds the same, whatever order backups that overlap are given in", func(t *testing.T) {
+		// EventSourcingDB signs an event whenever it hands it out, with the
+		// key it has then, so the same event has another signature in a
+		// backup taken after the key changed.
+		otherSignature := laterFullBackup.changed(t, 4, `"signature":"esdb:signature:v1:7277`, `"signature":"esdb:signature:v1:0277`)
+		changedData := fullBackupOfV1.changed(t, 2, `"city":"Zürich"`, `"city":"Zurich"`)
+
+		for _, test := range []struct {
+			name     string
+			backups  []namedBackup
+			findings []verify.Finding
+		}{
+			{
+				name:    "with another signature",
+				backups: []namedBackup{fullBackupOfV1, fullBackup, otherSignature, secondIncrementalBackup},
+			},
+			{
+				name:     "with changed data",
+				backups:  []namedBackup{changedData, fullBackup, otherSignature, secondIncrementalBackup},
+				findings: []verify.Finding{manipulation(verify.CheckBackups, "Event 1 is not the same in full.ndjson and in v1.ndjson, which differ in data")},
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				var first []verify.Finding
+				for i, order := range permutationsOf(test.backups) {
+					result := verifyBackups(t, confirmedChain(), order...)
+
+					assertFindings(t, result, test.findings...)
+					assert.Equal(t, 10, result.EventCount)
+					assert.Equal(t, []string{"full.ndjson", "v1.ndjson", "full-later.ndjson", "incremental-2.ndjson"}, namesOf(result))
+					if i == 0 {
+						first = result.Findings
+					}
+					assert.Equal(t, first, result.Findings, "order %d", i)
+				}
+			})
+		}
+	})
+
+	t.Run("finds an event that a backup lacks, although another backup holds it", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			backups []namedBackup
+			message string
+		}{
+			{
+				name:    "a full backup that lacks an event of another full backup",
+				backups: []namedBackup{laterFullBackup.withoutLines(5, 6), fullBackup},
+				message: "Backup full-later.ndjson lacks event 2, which lies between its start and the event it ended at, so the event has been removed from it",
+			},
+			{
+				name:    "an incremental backup that lacks an event of a full backup",
+				backups: []namedBackup{laterFullBackup, firstIncrementalBackup.withoutLines(4, 5)},
+				message: "Backup incremental-1.ndjson lacks event 5, which lies between its start and the event it ended at, so the event has been removed from it",
+			},
+			{
+				name:    "an incremental backup that lacks its first events",
+				backups: []namedBackup{laterFullBackup, firstIncrementalBackup.withoutLines(3, 5)},
+				message: "Backup incremental-1.ndjson lacks events 4 to 5, which lie between its start and the event it ended at, so the events have been removed from it",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				result := verifyBackups(t, confirmedChain(), test.backups...)
+
+				assertFindings(t, result,
+					manipulation(verify.CheckBackups, test.message),
+				)
+				assert.Equal(t, 10, result.EventCount)
+			})
+		}
+	})
+
+	t.Run("finds an event that a backup lacks, which no other backup holds", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), fullBackup, firstIncrementalBackup.withoutLines(4, 5), secondIncrementalBackup)
+
+		lacking := eventFindingsOf(result.EventsResult, verify.SeverityManipulation, verify.CheckBackups)
+		require.Len(t, lacking, 1)
+		assert.Contains(t, lacking[0].Message, "Backup incremental-1.ndjson lacks event 5")
+		assert.NotEmpty(t, eventFindingsOf(result.EventsResult, verify.SeverityManipulation, verify.CheckEventChain))
+	})
+
+	t.Run("finds the first events that an incremental backup after a gap lacks", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), fullBackup, secondIncrementalBackup.withoutLines(3, 4))
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Events 4 to 6 are in none of the backups"),
+			manipulation(verify.CheckBackups, "Backup incremental-2.ndjson lacks event 7"),
+			manipulation(verify.CheckEventChain, "Event 8 does not follow event 6, which its backup follows on, since it names another predecessor hash"),
+			manipulation(verify.CheckFingerprints, "1 events the custodian has confirmed are missing from the database, from event 7"),
+		)
 	})
 
 	t.Run("accepts an incremental backup that follows on an event within the backup before it", func(t *testing.T) {
