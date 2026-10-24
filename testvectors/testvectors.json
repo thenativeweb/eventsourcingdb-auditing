@@ -153,5 +153,41 @@
       "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"tag:thenativeweb.io,2023:test\",\"subject\":\"/users\",\"type\":\"io.thenativeweb.test.foo\",\"traceparent\":\"00-00000000000000000000000000000005-0000000000000005-05\",\"tracestate\":\"a=5\",\"specversion\":\"5\",\"id\":\"4\",\"time\":\"2023-01-02T13:37:02.0001Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"f8fa12a86ccc776c94ad95802ed1fc1d182a17dbeed9846381711f062a5d2a47\",\"data\":{}},\"hash\":\"084d451c2a2606c85577a5aec38d28837d3db41f590106c85426b535bb03a705\"}}",
       "hash": "084d451c2a2606c85577a5aec38d28837d3db41f590106c85426b535bb03a705"
     }
+  ],
+  "eventHashesOfVersion2": [
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-acquired\",\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\",\"tracestate\":\"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE\",\"specversion\":\"1.0\",\"id\":\"0\",\"time\":\"2026-10-24T09:11:14.238369299Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"data\":{\"author\":{\"born\":1917,\"name\":\"Arthur C. Clarke\"},\"note\":\"\\u003ca \\u0026 b\\u003e \\\"quoted\\\"\",\"price\":9.99,\"tags\":[\"sci-fi\",\"классика\"],\"title\":\"2001 – A Space Odyssey\"}},\"hash\":\"esdb:hash:v2:70c43ea80e5c411e6c1cf6a9e1b39e8f1d62a2c7fd6370123dcf3c7344305f37\"}}",
+      "hash": "esdb:hash:v2:70c43ea80e5c411e6c1cf6a9e1b39e8f1d62a2c7fd6370123dcf3c7344305f37"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/23\",\"type\":\"io.eventsourcingdb.library.reader-registered\",\"specversion\":\"1.0\",\"id\":\"1\",\"time\":\"2026-10-24T09:11:14.238369299Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"esdb:hash:v2:70c43ea80e5c411e6c1cf6a9e1b39e8f1d62a2c7fd6370123dcf3c7344305f37\",\"data\":{\"address\":{\"city\":\"Zürich\",\"geo\":{\"lat\":47.3769,\"lon\":8.5417}},\"empty\":{},\"list\":[1,2,{\"x\":null}],\"name\":\"阿部 🎉\"}},\"hash\":\"esdb:hash:v2:e2ab0f6535dea92a3c6c095827fde4f199cdf503df981227df8ceaff3193bb54\"}}",
+      "hash": "esdb:hash:v2:e2ab0f6535dea92a3c6c095827fde4f199cdf503df981227df8ceaff3193bb54"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-borrowed\",\"traceparent\":\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\",\"specversion\":\"1.0\",\"id\":\"2\",\"time\":\"2026-10-24T09:11:14.238369299Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"esdb:hash:v2:e2ab0f6535dea92a3c6c095827fde4f199cdf503df981227df8ceaff3193bb54\",\"data\":{\"borrowedBy\":\"/readers/23\",\"copies\":9007199254740993,\"due\":{\"date\":\"2026-11-07\",\"reminders\":[{\"days\":3},{\"days\":1}]},\"huge\":1e+21,\"negative\":-42,\"ratio\":0.1,\"tiny\":1e-7,\"whole\":1}},\"hash\":\"esdb:hash:v2:0457d4ebbf2ebf5e9fe8aec88adb84616f0a513a0d78eff85df4553072377df9\"}}",
+      "hash": "esdb:hash:v2:0457d4ebbf2ebf5e9fe8aec88adb84616f0a513a0d78eff85df4553072377df9"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-returned\",\"specversion\":\"1.0\",\"id\":\"3\",\"time\":\"2026-10-24T09:11:14.238369299Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"esdb:hash:v2:0457d4ebbf2ebf5e9fe8aec88adb84616f0a513a0d78eff85df4553072377df9\",\"data\":{\"returnedBy\":\"/readers/23\"}},\"hash\":\"esdb:hash:v2:f0423d9c21785e40c97668a49121d6908a2ae9134ce81d9ddaf0818a2e01fa43\"}}",
+      "hash": "esdb:hash:v2:f0423d9c21785e40c97668a49121d6908a2ae9134ce81d9ddaf0818a2e01fa43"
+    }
+  ],
+  "eventHashesOfBothVersions": [
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-acquired\",\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\",\"tracestate\":\"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE\",\"specversion\":\"1.0\",\"id\":\"0\",\"time\":\"2026-10-24T09:10:44.555121341Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"data\":{\"author\":{\"born\":1917,\"name\":\"Arthur C. Clarke\"},\"note\":\"\\u003ca \\u0026 b\\u003e \\\"quoted\\\"\",\"price\":9.99,\"tags\":[\"sci-fi\",\"классика\"],\"title\":\"2001 – A Space Odyssey\"}},\"hash\":\"150bcf0803161bd9066a4f932623daf50055715229bc413ee48d345902e8a501\"}}",
+      "hash": "150bcf0803161bd9066a4f932623daf50055715229bc413ee48d345902e8a501"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/23\",\"type\":\"io.eventsourcingdb.library.reader-registered\",\"specversion\":\"1.0\",\"id\":\"1\",\"time\":\"2026-10-24T09:10:44.555121341Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"150bcf0803161bd9066a4f932623daf50055715229bc413ee48d345902e8a501\",\"data\":{\"copies\":3,\"name\":\"Jürgen \\\"J\\\" O'Neil\"}},\"hash\":\"8db61e6289a4ec2b883b0fbfdda21f269384a13b07b5940f96422979e6a325e9\"}}",
+      "hash": "8db61e6289a4ec2b883b0fbfdda21f269384a13b07b5940f96422979e6a325e9"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/books/42\",\"type\":\"io.eventsourcingdb.library.book-borrowed\",\"traceparent\":\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\",\"tracestate\":\"vendor=value\",\"specversion\":\"1.0\",\"id\":\"2\",\"time\":\"2026-10-24T09:10:53.861434262Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"8db61e6289a4ec2b883b0fbfdda21f269384a13b07b5940f96422979e6a325e9\",\"data\":{\"borrowedBy\":\"/readers/23\",\"copies\":9007199254740993,\"due\":{\"date\":\"2026-11-07\",\"reminders\":[{\"days\":3},{\"days\":1}]},\"huge\":1e+21,\"negative\":-42,\"ratio\":0.1,\"tiny\":1e-7,\"whole\":1}},\"hash\":\"esdb:hash:v2:9e69606a3e764f70bb065d725c760510bc346eb02092e66d66ca3c6e3b35a16f\"}}",
+      "hash": "esdb:hash:v2:9e69606a3e764f70bb065d725c760510bc346eb02092e66d66ca3c6e3b35a16f"
+    },
+    {
+      "backupLine": "{\"type\":\"event\",\"payload\":{\"event\":{\"source\":\"https://library.eventsourcingdb.io\",\"subject\":\"/readers/23\",\"type\":\"io.eventsourcingdb.library.reader-moved\",\"specversion\":\"1.0\",\"id\":\"3\",\"time\":\"2026-10-24T09:10:53.861434262Z\",\"datacontenttype\":\"application/json\",\"predecessorhash\":\"esdb:hash:v2:9e69606a3e764f70bb065d725c760510bc346eb02092e66d66ca3c6e3b35a16f\",\"data\":{\"address\":{\"city\":\"Zürich\",\"geo\":{\"lat\":47.3769,\"lon\":8.5417}},\"empty\":{},\"list\":[1,2,{\"x\":null}],\"name\":\"阿部 🎉\"}},\"hash\":\"esdb:hash:v2:9a16a9774e6d1c220d0a98cfd35947b05c1a590d8208ab54e349c06de6c3c83d\"}}",
+      "hash": "esdb:hash:v2:9a16a9774e6d1c220d0a98cfd35947b05c1a590d8208ab54e349c06de6c3c83d"
+    }
   ]
 }

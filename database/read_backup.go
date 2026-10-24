@@ -32,15 +32,21 @@ type backedUpEvent struct {
 		Type            string          `json:"type"`
 		DataContentType string          `json:"datacontenttype"`
 		PredecessorHash string          `json:"predecessorhash"`
+		TraceParent     *string         `json:"traceparent"`
+		TraceState      *string         `json:"tracestate"`
 		Data            json.RawMessage `json:"data"`
 	} `json:"event"`
 	Hash string `json:"hash"`
 }
 
 // ReadBackup reads the events of a backup, which EventSourcingDB writes as
-// newline-delimited JSON on /api/v1/backup, in the order they were written. It
-// skips the schemas of event types, and fails on an error the database wrote
-// into the backup, since the backup is incomplete then.
+// newline-delimited JSON on /api/v1/backup, in the order they were written,
+// and checks the hash of every event in the version that hash names. It skips
+// the schemas of event types, and fails on an error the database wrote into
+// the backup, since the backup is incomplete then.
+//
+// From version 1.3 on, EventSourcingDB also writes backups in another format,
+// on /api/v2/management/create-backup, which ReadBackup does not read.
 func ReadBackup(backup io.Reader) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		scanner := bufio.NewScanner(backup)
@@ -89,6 +95,10 @@ func parseBackupLine(data []byte) (Event, bool, error) {
 		var message string
 		_ = json.Unmarshal(line.Payload, &message)
 		return Event{}, false, fmt.Errorf("the database could not back up everything: %s", message)
+	case "backup":
+		// Only a backup in the format of /api/v2/management/create-backup
+		// starts with such a line, which names the version of its format.
+		return Event{}, false, errors.New("the backup is in the format of /api/v2/management/create-backup, which is not supported, so back up on /api/v1/backup instead")
 	default:
 		return Event{}, false, fmt.Errorf("unknown type %q", line.Type)
 	}
@@ -107,7 +117,7 @@ func parseBackupLine(data []byte) (Event, bool, error) {
 		return Event{}, false, fmt.Errorf("event %s has an invalid time: %w", backedUp.Event.ID, err)
 	}
 
-	computed := hash(eventContent{
+	content := eventContent{
 		SpecVersion:     backedUp.Event.SpecVersion,
 		ID:              backedUp.Event.ID,
 		PredecessorHash: backedUp.Event.PredecessorHash,
@@ -116,14 +126,19 @@ func parseBackupLine(data []byte) (Event, bool, error) {
 		Subject:         backedUp.Event.Subject,
 		Type:            backedUp.Event.Type,
 		DataContentType: backedUp.Event.DataContentType,
+		TraceParent:     backedUp.Event.TraceParent,
+		TraceState:      backedUp.Event.TraceState,
 		Data:            backedUp.Event.Data,
-	})
+	}
+	hashVersion, isKnown := hashVersionOf(backedUp.Hash)
 
 	return Event{
-		ID:              backedUp.Event.ID,
-		Time:            writtenAt,
-		Hash:            backedUp.Hash,
-		PredecessorHash: backedUp.Event.PredecessorHash,
-		HashMatches:     computed == backedUp.Hash,
+		ID:                   backedUp.Event.ID,
+		Time:                 writtenAt,
+		Hash:                 backedUp.Hash,
+		PredecessorHash:      backedUp.Event.PredecessorHash,
+		HashVersion:          hashVersion,
+		HashMatches:          hashMatches(content, backedUp.Hash),
+		HashVersionIsUnknown: !isKnown,
 	}, true, nil
 }

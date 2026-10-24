@@ -26,15 +26,19 @@ $ eventsourcingdb-auditing verify \
     --receipts-directory ./receipts
 ```
 
+*Note that EventSourcingDB 1.3 and later also write backups on `/api/v2/management/create-backup`, in another format, which the tool does not read yet. Use `/api/v1/backup` until then.*
+
 The tool reads from the custodian at `https://auditing.eventsourcingdb.io`, or from another one given with `--server-url`. It reads what the custodian has recorded about the instance, and checks:
 
 - that the keys of the custodian are certified by the root key, that its receipts form one chain, and that its anchors are signed, stamped, chained, prove the receipts of the instance without leaving any out, and match the public chain of anchors,
-- that every event of the backup still hashes to its hash, that the events form one chain, and that they match every fingerprint the custodian has confirmed since the latest reset of the baseline,
+- that every event of the backup still hashes to its hash, in the version of the hash it was written with, that the events form one chain, and that they match every fingerprint the custodian has confirmed since the latest reset of the baseline,
 - how long every event stayed without the protection of a fingerprint, and whether the client was ever silent for longer than its heartbeat interval,
 - whether the time stamps of the anchors were issued by a qualified time stamping service at their time, using the EU trusted lists,
 - if the receipts directory of the client is given, that the custodian still holds every receipt and every anchor the client kept.
 
 Instead of a backup, the tool can read the running database with `--esdb-url` and `--esdb-api-token`. Note that EventSourcingDB has no API token that only reads, so whoever runs this holds a token that could write as well.
+
+EventSourcingDB writes hashes of version 2 from version 1.3 on, which also cover the trace context of an event, and wrote hashes of version 1 before. Events keep the version they were written with, so a database may hold both, and the tool checks every event in the version its own hash names. An event whose hash is of a version the tool does not know yet is not reported as changed, but as a gap in protection, since whether it has been changed can not be told.
 
 The report names what was checked, including the SHA-256 of the backup, and lists every finding, grouped into manipulations, gaps in protection, and notices. With `--output json`, it is written as JSON. The exit code is `0` if nothing was found, `1` if a manipulation was found, `2` if only gaps in protection were found, and `3` if the verification could not be run.
 
@@ -62,7 +66,7 @@ It contains the following packages:
 - `timestamping` obtains time stamps from a time stamping authority according to RFC 3161, and checks that a time stamp covers the expected digest and is signed by the authority it names.
 - `audit` describes what the custodian hands out to auditors, and provides a client to read it: the audited instance with its intervals and key certificates, its chain of fingerprints, receipts, conflicts, breaks, and resets, and the anchors with its proofs. An auditor reads with an auditor token, which the customer grants, which only reads, and which expires. The chain of anchors is public.
 
-- `database` reads the events of the EventSourcingDB of a customer, either from a backup, as EventSourcingDB writes it on `/api/v1/backup`, or from the running database, and checks for every event whether its content still hashes to its hash. From a backup, the time and the data are hashed exactly as they were written, so that escapes in the data do not get lost.
+- `database` reads the events of the EventSourcingDB of a customer, either from a backup, as EventSourcingDB writes it on `/api/v1/backup`, or from the running database, and checks for every event whether its content still hashes to its hash. It knows both versions of the hash, and computes every event in the version its own hash names: version 1, without a prefix, and version 2, which starts with `esdb:hash:v2:`, and which EventSourcingDB writes from version 1.3 on. It tells a hash of a version it does not know from one that does not match. From a backup, the time and the data are hashed exactly as they were written, so that escapes in the data do not get lost.
 - `verify` checks what the custodian has recorded about an instance: that its keys are certified by the root key, that its receipts form one chain that matches its entries, that its anchors are signed, stamped, chained, and prove the receipts of the instance without leaving any out, that they match the public chain of anchors, and that the client was never silent for longer than its heartbeat interval. It then checks the events of the instance against it: that every event still hashes to its hash, that the events form one chain, that they match every fingerprint the custodian has confirmed since the latest reset of the baseline, and how long every event stayed without the protection of a fingerprint. Every problem becomes a finding, either a manipulation, a gap in protection, or a notice, so that a report can list them all.
 
 - `trustedlists` tells whether a time stamp was issued by a qualified time stamping service, using the EU trusted lists. It checks the XAdES signature of the list of the lists against the certificates the European Commission has announced in the Official Journal (C/2026/1944), following pivot lists to later ones, and the signature of the list of every member state against the certificates the list of the lists names for it. A time stamp counts as qualified if the certificate it was signed with, or the one that issued it, is the digital identity of a QTST service that was granted at the time of the time stamp. The lists are fetched from where they are published, or read from a directory, which `trustedlists.Download` fills, for verifying without network.
@@ -72,7 +76,7 @@ It contains the following packages:
 
 The package `testvectors` checks that the code produces exactly the test vectors of the specification, in `testvectors/testvectors.json`. After changing a format on purpose, update them with `UPDATE_TEST_VECTORS=1 go test ./testvectors/`, and the specification with them.
 
-The packages `receipt/receipttest`, `timestamping/timestampingtest`, `trustedlists/trustedliststest`, and `verify/verifytest` provide keys, a time stamping authority, real trusted lists, and a custodian for tests.
+The packages `database/databasetest`, `receipt/receipttest`, `timestamping/timestampingtest`, `trustedlists/trustedliststest`, and `verify/verifytest` provide an EventSourcingDB in a container together with backups of a real one, keys, a time stamping authority, real trusted lists, and a custodian for tests.
 
 ## Running quality assurance
 
@@ -80,6 +84,12 @@ To run quality assurance for this module use the following command. Some tests s
 
 ```shell
 $ make
+```
+
+The tests start the image `thenativeweb/eventsourcingdb:latest`. To run them against another version, set its tag in `EVENTSOURCINGDB_IMAGE_TAG`. The pipeline runs them against `latest` and `preview`:
+
+```shell
+$ EVENTSOURCINGDB_IMAGE_TAG=preview make
 ```
 
 The tests use a time stamping authority of their own, and an answer of DGN, the qualified time stamping authority of the custodian, which `timestamping/testdata` holds together with its request. To check the `timestamping` package against a real authority, pass its URL, and its credentials if it requires them. Every run uses up one time stamp:

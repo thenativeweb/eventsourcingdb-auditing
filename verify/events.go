@@ -24,10 +24,11 @@ type EventsResult struct {
 }
 
 // VerifyEvents checks the events of the database of a customer, in the order
-// they were written: that every event still hashes to its hash, that they form
-// one chain, that they match every fingerprint the custodian has confirmed
-// since the latest reset of the baseline, and how long every event stayed
-// without the protection of a fingerprint. The time is when the audit happens.
+// they were written: that every event still hashes to its hash, in the version
+// that hash names, that they form one chain, that they match every fingerprint
+// the custodian has confirmed since the latest reset of the baseline, and how
+// long every event stayed without the protection of a fingerprint. The time is
+// when the audit happens.
 //
 // It only fails if the events can not be read, since then nothing can be said
 // about them.
@@ -71,8 +72,12 @@ type eventsCheck struct {
 	previous    database.Event
 
 	// changed collects consecutive events whose content no longer hashes to
-	// their hash, so that they end up in one finding.
-	changed *eventRange
+	// their hash, so that they end up in one finding, and unknownVersion the
+	// ones whose hashes are of a version that is not known, together with
+	// that version.
+	changed            *eventRange
+	unknownVersion     *eventRange
+	unknownHashVersion string
 
 	// confirmed holds the fingerprints since the latest reset that no event
 	// has matched yet, and confirmedBefore the ones before it.
@@ -168,6 +173,20 @@ func (c *eventsCheck) event(event database.Event) error {
 }
 
 func (c *eventsCheck) checkHash(event database.Event) {
+	if event.HashVersionIsUnknown {
+		c.flushChanged()
+		if c.unknownVersion != nil && c.unknownHashVersion != event.HashVersion {
+			c.flushUnknownVersion()
+		}
+		if c.unknownVersion == nil {
+			c.unknownVersion = &eventRange{firstID: event.ID, firstAt: event.Time}
+			c.unknownHashVersion = event.HashVersion
+		}
+		c.unknownVersion.extend(event)
+		return
+	}
+	c.flushUnknownVersion()
+
 	if event.HashMatches {
 		c.flushChanged()
 		return
@@ -190,6 +209,25 @@ func (c *eventsCheck) flushChanged() {
 		c.found.addPeriod(SeverityManipulation, CheckEventHashes, c.changed.firstAt, c.changed.lastAt, "Events %s to %s have been changed, since their content no longer hashes to their hashes", c.changed.firstID, c.changed.lastID)
 	}
 	c.changed = nil
+}
+
+// flushUnknownVersion reports events whose hashes are of a version that is
+// not known, which only a newer EventSourcingDB writes. Whether they have been
+// changed can not be told, so they are not reported as changed, which would be
+// a false alarm, but not passed either: they stay without the protection of a
+// hash that can be checked, until a newer version of this tool checks them.
+func (c *eventsCheck) flushUnknownVersion() {
+	if c.unknownVersion == nil {
+		return
+	}
+
+	if c.unknownVersion.isSingle() {
+		c.found.addPeriod(SeverityGap, CheckEventHashes, c.unknownVersion.firstAt, c.unknownVersion.lastAt, "Event %s has a hash of version %q, which this version of the tool does not support, so whether it has been changed can not be told", c.unknownVersion.firstID, c.unknownHashVersion)
+	} else {
+		c.found.addPeriod(SeverityGap, CheckEventHashes, c.unknownVersion.firstAt, c.unknownVersion.lastAt, "Events %s to %s have hashes of version %q, which this version of the tool does not support, so whether they have been changed can not be told", c.unknownVersion.firstID, c.unknownVersion.lastID, c.unknownHashVersion)
+	}
+	c.unknownVersion = nil
+	c.unknownHashVersion = ""
 }
 
 func (c *eventsCheck) checkChain(event database.Event, eventID uint64) {
@@ -290,6 +328,7 @@ func (c *eventsCheck) flushLate() {
 
 func (c *eventsCheck) finish() {
 	c.flushChanged()
+	c.flushUnknownVersion()
 	c.flushLate()
 
 	if c.unprotected != nil {

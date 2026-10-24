@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thenativeweb/eventsourcingdb-auditing/audit"
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
 )
 
@@ -131,6 +134,29 @@ func TestVerifyEvents(t *testing.T) {
 		assert.Contains(t, changed[1].Message, "Event 7 has been changed")
 	})
 
+	t.Run("reports events whose hashes are of a version it does not know as a gap, rather than as changed, and joins consecutive ones of the same version", func(t *testing.T) {
+		events, custodian := wellCovered()
+		for i, version := range map[int]string{3: "v3", 4: "v3", 5: "v4"} {
+			events[i].HashMatches = false
+			events[i].HashVersionIsUnknown = true
+			events[i].HashVersion = version
+		}
+		events[7].HashMatches = false
+
+		result := verifyEventsAt(t, events, custodian, tenOClock.Add(6*time.Minute))
+
+		unknown := eventFindingsOf(result, verify.SeverityGap, verify.CheckEventHashes)
+		require.Len(t, unknown, 2)
+		assert.Contains(t, unknown[0].Message, `Events 3 to 4 have hashes of version "v3", which this version of the tool does not support`)
+		assert.Equal(t, events[3].Time, *unknown[0].From)
+		assert.Equal(t, events[4].Time, *unknown[0].Until)
+		assert.Contains(t, unknown[1].Message, `Event 5 has a hash of version "v4", which this version of the tool does not support`)
+
+		changed := eventFindingsOf(result, verify.SeverityManipulation, verify.CheckEventHashes)
+		require.Len(t, changed, 1, "only the event whose hash no longer matches has been changed")
+		assert.Contains(t, changed[0].Message, "Event 7 has been changed")
+	})
+
 	t.Run("finds missing events and events that do not follow the one before", func(t *testing.T) {
 		events, custodian := wellCovered()
 		events[6].PredecessorHash = "other-hash"
@@ -232,6 +258,73 @@ func TestVerifyEvents(t *testing.T) {
 		protection := eventFindingsOf(old, verify.SeverityGap, verify.CheckProtection)
 		require.Len(t, protection, 1)
 		assert.Contains(t, protection[0].Message, "Events 10 to 11 are not protected by any fingerprint yet, the oldest of them for 10m0s")
+	})
+
+	t.Run("finds changed events and broken links in a backup with hashes of both versions", func(t *testing.T) {
+		backup := databasetest.BackupWithHashesOfBothVersions
+		lines := strings.SplitAfter(backup, "\n")
+
+		for _, test := range []struct {
+			name         string
+			backup       string
+			changed      []string
+			brokenChains []string
+		}{
+			{
+				name:   "unchanged",
+				backup: backup,
+			},
+			{
+				name:    "a changed tracestate",
+				backup:  strings.Replace(backup, `"tracestate":"vendor=value"`, `"tracestate":"vendor=other"`, 1),
+				changed: []string{"Event 2 has been changed"},
+			},
+			{
+				name:    "changed data",
+				backup:  strings.Replace(backup, `"city":"Zürich"`, `"city":"Zurich"`, 1),
+				changed: []string{"Event 3 has been changed"},
+			},
+			{
+				name:         "a changed hash of version 2",
+				backup:       strings.Replace(backup, `"hash":"esdb:hash:v2:9e69`, `"hash":"esdb:hash:v2:8e69`, 1),
+				changed:      []string{"Event 2 has been changed"},
+				brokenChains: []string{"Event 3 does not follow event 2"},
+			},
+			{
+				name:         "a changed hash of version 1, which the first event of version 2 names",
+				backup:       strings.Replace(backup, `"hash":"8db6`, `"hash":"7db6`, 1),
+				changed:      []string{"Event 1 has been changed"},
+				brokenChains: []string{"Event 2 does not follow event 1"},
+			},
+			{
+				name:         "a missing event",
+				backup:       strings.Join(slices.Delete(slices.Clone(lines), 2, 3), ""),
+				brokenChains: []string{"Event 3 follows event 1, so the events between them are missing", "Event 3 does not follow event 1"},
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				if test.name != "unchanged" {
+					require.NotEqual(t, backup, test.backup, "the backup must be changed")
+				}
+
+				result, err := verify.VerifyEvents(database.ReadBackup(strings.NewReader(test.backup)), custodianResult(nil), tenOClock)
+				require.NoError(t, err)
+
+				changed := eventFindingsOf(result, verify.SeverityManipulation, verify.CheckEventHashes)
+				require.Len(t, changed, len(test.changed))
+				for i, message := range test.changed {
+					assert.Contains(t, changed[i].Message, message)
+				}
+
+				brokenChains := eventFindingsOf(result, verify.SeverityManipulation, verify.CheckEventChain)
+				require.Len(t, brokenChains, len(test.brokenChains))
+				for i, message := range test.brokenChains {
+					assert.Contains(t, brokenChains[i].Message, message)
+				}
+
+				assert.Empty(t, eventFindingsOf(result, verify.SeverityGap, verify.CheckEventHashes))
+			})
+		}
 	})
 
 	t.Run("fails if the events can not be read", func(t *testing.T) {
