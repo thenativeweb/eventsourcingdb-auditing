@@ -17,7 +17,7 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/receiptsdir"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
-	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdb"
 )
 
 // Options say what to verify.

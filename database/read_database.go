@@ -6,7 +6,7 @@ import (
 	"iter"
 	"time"
 
-	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdb"
 )
 
 // ReadDatabase reads the events of a running database, in the order they were
