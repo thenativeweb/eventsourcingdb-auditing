@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
 	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
@@ -83,13 +84,13 @@ func TestVerify(t *testing.T) {
 	t.Setenv("ROOT_PUBLIC_KEY", "")
 	t.Setenv("ESDB_URL", "")
 
-	// newBackup writes the backup with five events, and a custodian that has
-	// confirmed every one of them half a minute after it was written.
-	newBackup := func(t *testing.T, backup string) (string, *verifytest.Custodian) {
+	// newBackup writes a backup, and a custodian that has confirmed every
+	// event of the confirmed backup half a minute after it was written.
+	newBackup := func(t *testing.T, confirmed, backup string) (string, *verifytest.Custodian) {
 		t.Helper()
 
 		custodian := verifytest.NewCustodian(t)
-		for event, err := range database.ReadBackup(strings.NewReader(verifytest.BackupWithFiveEvents)) {
+		for event, err := range database.ReadBackup(strings.NewReader(confirmed)) {
 			require.NoError(t, err)
 			custodian.Record(event.ID, event.Hash, event.Time.Add(30*time.Second))
 		}
@@ -114,7 +115,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	t.Run("writes the report as text, and ends with the exit code of its result", func(t *testing.T) {
-		backupPath, custodian := newBackup(t, verifytest.BackupWithFiveEvents)
+		backupPath, custodian := newBackup(t, verifytest.BackupWithFiveEvents, verifytest.BackupWithFiveEvents)
 
 		exitCode, stdout, stderr := runWith(verifyArgs(t, custodian, backupPath)...)
 
@@ -125,7 +126,7 @@ func TestVerify(t *testing.T) {
 	})
 
 	t.Run("writes the report as JSON", func(t *testing.T) {
-		backupPath, custodian := newBackup(t, verifytest.BackupWithFiveEvents)
+		backupPath, custodian := newBackup(t, verifytest.BackupWithFiveEvents, verifytest.BackupWithFiveEvents)
 
 		exitCode, stdout, _ := runWith(verifyArgs(t, custodian, backupPath, "--output", "json")...)
 
@@ -138,7 +139,28 @@ func TestVerify(t *testing.T) {
 
 	t.Run("ends with the exit code for a manipulation if an event was changed", func(t *testing.T) {
 		changed := strings.Replace(verifytest.BackupWithFiveEvents, `"data":{"username":"arno"}},"hash":"64d0`, `"data":{"username":"arnold"}},"hash":"64d0`, 1)
-		backupPath, custodian := newBackup(t, changed)
+		backupPath, custodian := newBackup(t, verifytest.BackupWithFiveEvents, changed)
+
+		exitCode, stdout, _ := runWith(verifyArgs(t, custodian, backupPath)...)
+
+		assert.Contains(t, stdout, "Event 2 has been changed")
+		assert.Equal(t, report.ExitCodeManipulation, exitCode)
+	})
+
+	t.Run("finds no manipulation in a backup with hashes of both versions", func(t *testing.T) {
+		backupPath, custodian := newBackup(t, databasetest.BackupWithHashesOfBothVersions, databasetest.BackupWithHashesOfBothVersions)
+
+		exitCode, stdout, stderr := runWith(verifyArgs(t, custodian, backupPath)...)
+
+		assert.Empty(t, stderr)
+		assert.Contains(t, stdout, "Events              4")
+		assert.Contains(t, stdout, "(0 manipulations, ")
+		assert.Contains(t, []int{report.ExitCodeNoFindings, report.ExitCodeGaps}, exitCode, "the client may have been silent since the backup was taken")
+	})
+
+	t.Run("ends with the exit code for a manipulation if an event with a hash of version 2 was changed", func(t *testing.T) {
+		changed := strings.Replace(databasetest.BackupWithHashesOfBothVersions, `"tracestate":"vendor=value"`, `"tracestate":"vendor=other"`, 1)
+		backupPath, custodian := newBackup(t, databasetest.BackupWithHashesOfBothVersions, changed)
 
 		exitCode, stdout, _ := runWith(verifyArgs(t, custodian, backupPath)...)
 

@@ -35,7 +35,7 @@ What the verification proves: that every event the custodian has confirmed is st
 
 ## 2. Conventions
 
-- **Hashes** are SHA-256, written as 64 lowercase hexadecimal characters, unless stated otherwise.
+- **Hashes** are SHA-256, written as 64 lowercase hexadecimal characters, unless stated otherwise, as for the hashes of events of version 2, which carry a prefix ([section 3.1](#31-the-hash-of-an-event)).
 - **base64url** means base64 with the URL-safe alphabet and without padding (RFC 4648, section 5). **base64** means the standard alphabet with padding (RFC 4648, section 4).
 - **Times** are written in RFC 3339, in UTC, with a fractional part only if it is not zero, as in `2026-09-01T10:05:00Z` or `2023-01-02T13:37:00.0001Z`.
 - **Event IDs** are decimal numbers written as strings, starting at `"0"`, and are compared as numbers.
@@ -45,29 +45,58 @@ What the verification proves: that every event the custodian has confirmed is st
 
 ### 3.1 The hash of an event
 
-The hash of an event is computed from its content as EventSourcingDB does:
+The hash of an event is computed from its content as EventSourcingDB does. There are two versions of it: EventSourcingDB writes hashes of version 2 from version 1.3 on, and wrote hashes of version 1 before. An event keeps the version of the hash it was written with, so a database that was written to before and after an update to 1.3 holds both versions, the ones of version 1 first. Every hash names its version:
+
+- A hash that starts with `esdb:hash:v2:` is of **version 2**, with 64 lowercase hexadecimal characters after the prefix.
+- A hash that does not start with `esdb:hash:` is of **version 1**, and has no prefix.
+- A hash that starts with `esdb:hash:`, followed by anything other than `v2:`, is of a version that this specification does not know, which only a newer EventSourcingDB writes.
+
+Every event MUST be computed in the version its own hash names, and in no other. A hash of a version the verifier does not know MUST NOT be computed at all, and MUST NOT be taken for a hash that does not match ([section 10.2](#102-the-events)).
+
+The hash of **version 1** is computed as follows. It covers neither `traceparent` nor `tracestate`:
 
 1. The **metadata** is the string `specversion|id|predecessorhash|time|source|subject|type|datacontenttype`, joined with vertical bars, with every field exactly as it was written.
-2. The **data** is the JSON of the data of the event, byte for byte as it was written. It MUST NOT be parsed and written again, since that may change escapes, whitespace, or the order of members.
+2. The **data** is the JSON of the data of the event, byte for byte as it was written.
 3. The hash is `SHA-256(hex(SHA-256(metadata)) || hex(SHA-256(data)))`, where `||` joins the two hexadecimal strings.
 
-The time is part of the metadata as a string. When reading a backup, it MUST be taken as it appears there. When reading a running database through a client SDK that parses it, it is written again in RFC 3339 with the fractional part trimmed of trailing zeros, which matches what EventSourcingDB writes.
+The hash of **version 2** is computed over these twelve lines, joined with a line feed (`\n`), without a line feed after the last one, with every field exactly as it was written:
+
+1. `esdb:hash:v2:`
+2. `specversion`
+3. `id`
+4. `predecessorhash`, exactly as the event carries it, so with its prefix if it has one
+5. `time`
+6. `source`
+7. `subject`
+8. `type`
+9. `datacontenttype`
+10. `traceparent`, or `-` if the event has none
+11. `tracestate`, or `-` if the event has none
+12. the JSON of the data of the event, byte for byte as it was written
+
+The hash is `esdb:hash:v2:`, followed by the SHA-256 of the joined lines.
+
+In both versions, the data MUST NOT be parsed and written again, since that may change escapes, whitespace, the order of members, or how numbers are written. EventSourcingDB writes it as compact JSON, as Go's `encoding/json` does, and hands it out that way, both in backups and through its APIs.
+
+The time is part of the hash as a string. When reading a backup, it MUST be taken as it appears there. When reading a running database through a client SDK that parses it, it is written again in RFC 3339 with the fractional part trimmed of trailing zeros, which matches what EventSourcingDB writes.
 
 ### 3.2 The chain of events
 
-Every event carries the hash of the event before it as `predecessorhash`. The first event of a database has the ID `"0"`, and the predecessor hash of 64 zeros (`0000…0000`). Every further event has the ID of the one before plus one.
+Every event carries the hash of the event before it as `predecessorhash`, exactly as that event carries it, with its prefix if it has one. So the first event of version 2 in a database names a hash of version 1, if there are events before it. The first event of a database has the ID `"0"`, and the predecessor hash of 64 zeros (`0000…0000`), without a prefix, whatever the version of its own hash. Every further event has the ID of the one before plus one.
 
 ### 3.3 Backups
 
 EventSourcingDB writes a backup on `POST /api/v1/backup` as newline-delimited JSON. Every line is an object with a `type` and a `payload`:
 
-- `event`: the payload is `{"event": {…}, "hash": "…"}`, the event as it was written, with the members `specversion`, `id`, `time`, `source`, `subject`, `type`, `datacontenttype`, `predecessorhash`, and `data`, and optionally `traceparent` and `tracestate`, which are not part of the hash.
+- `event`: the payload is `{"event": {…}, "hash": "…"}`, the event as it was written, with the members `specversion`, `id`, `time`, `source`, `subject`, `type`, `datacontenttype`, `predecessorhash`, and `data`, and optionally `traceparent` and `tracestate`, which are part of a hash of version 2, but not of one of version 1. The hash is of the version the event was written with.
 - `schema` (or `eventType`): the schema of an event type, which is not part of the chain.
 - `error`: an error the database ran into while backing up. A backup with such a line is incomplete, and MUST NOT be verified.
 
+From version 1.3 on, EventSourcingDB also writes backups on `POST /api/v2/management/create-backup`, in another format, which this specification does not cover yet. Its first line has the type `backup`, which a backup of `/api/v1/backup` never has. `/api/v1/backup` is deprecated from version 1.3 on, and goes away with version 2.0.
+
 ### 3.4 Fingerprints
 
-A **fingerprint** is the ID and the hash of the latest event of a database, read recursively from the subject `/`. Since every event carries the hash of the one before, the fingerprint of an event covers every event before it.
+A **fingerprint** is the ID and the hash of the latest event of a database, read recursively from the subject `/`, with the hash exactly as the event carries it, including its prefix if it has one. Since every event carries the hash of the one before, the fingerprint of an event covers every event before it.
 
 ## 4. Signed objects
 
@@ -288,7 +317,7 @@ Sorting the files by name sorts them by day.
 A verification reads the history of an instance from the custodian, the events of the database of the customer, from a backup or from the running database, and optionally the receipts directory of its client. It checks everything below, and reports every problem as a **finding**, rather than stopping at the first one. Every finding has a **severity**:
 
 - **Manipulation**: data has been changed, or the custodian contradicts itself, its signatures, or the public chain of anchors. The conflicts and continuity breaks the custodian has recorded count as manipulations as well, since a reset of the baseline only explains them.
-- **Gap**: events were not protected the way the intervals promise.
+- **Gap**: events were not protected the way the intervals promise, or are protected by hashes the verifier can not check.
 - **Notice**: something the auditor should know, for example a reset of the baseline and its reason, or a time stamp that is not qualified.
 
 ### 10.1 The custodian
@@ -305,7 +334,7 @@ A verification reads the history of an instance from the custodian, the events o
 
 ### 10.2 The events
 
-1. Every event MUST still hash to its hash ([section 3.1](#31-the-hash-of-an-event)). A violation is a manipulation.
+1. Every event MUST still hash to its hash, computed in the version its hash names ([section 3.1](#31-the-hash-of-an-event)). A violation is a manipulation. An event whose hash is of a version the verifier does not know can not be checked. It MUST NOT be reported as a manipulation, but as a gap that names the version, since whether it has been changed can not be told.
 2. The events MUST form one chain ([section 3.2](#32-the-chain-of-events)). Every missing event, and every event that names another predecessor hash, is a manipulation.
 3. Every event the custodian has confirmed since the latest reset of the baseline MUST be in the database with the confirmed hash. A different hash, and a confirmed event that is missing, is a manipulation. A difference to a fingerprint from before the latest reset is a notice.
 4. An event is **protected** once a receipt covers it, that is, a receipt for it or for an event after it. The time from when an event was written until the first receipt after the latest reset that covers it MUST NOT exceed the minimum interval valid at the time plus one minute. Events written before the latest reset are left out. A violation is a gap, as is an event no receipt covers yet, once it is older than allowed.
@@ -326,7 +355,7 @@ The tool in this repository ends with the exit code `0` for no findings, `1` for
 
 ## 11. Test vectors
 
-[`testvectors/testvectors.json`](testvectors/testvectors.json) holds test vectors for this specification. The tests in [`testvectors`](testvectors) check that the code in this repository produces exactly them, and that they verify, so that the specification and the code can not drift apart. The vectors are built from fixed seeds, and Ed25519 signatures are deterministic, so they never change unless a format does.
+[`testvectors/testvectors.json`](testvectors/testvectors.json) holds test vectors for this specification. The tests in [`testvectors`](testvectors) check that the code in this repository produces exactly them, and that they verify, so that the specification and the code can not drift apart. The vectors are built from fixed seeds, and Ed25519 signatures are deterministic, so they never change unless a format does. The hashes of events are the ones EventSourcingDB has computed, taken from real backups.
 
 | Member | Content |
 |---|---|
@@ -335,4 +364,6 @@ The tool in this repository ends with the exit code `0` for no findings, `1` for
 | `receipts` | three receipts of the instance `instance-1`, with their claims, JWS, and hashes, forming a chain |
 | `merkleTree` | a tree over five salted leaves, the first of which is the latest receipt, with its root, and the proofs for the leaves 0 and 4 |
 | `anchors` | two anchors with their claims, JWS, hashes, and digests: one over the tree above, and one over an empty tree, which follows it |
-| `eventHashes` | five lines of a backup of EventSourcingDB, with the hashes EventSourcingDB has computed for their events |
+| `eventHashes` | five lines of a backup of EventSourcingDB, with the hashes of version 1 EventSourcingDB has computed for their events |
+| `eventHashesOfVersion2` | four lines of a backup of EventSourcingDB 1.3, with the hashes of version 2 it has computed for their events, which have a whole trace context, a `traceparent` only, or none, and data with nested objects, unicode, escapes, and numbers |
+| `eventHashesOfBothVersions` | four lines of a backup of EventSourcingDB 1.3: two events that EventSourcingDB 1.2 wrote, with hashes of version 1, restored into 1.3, and two events that 1.3 wrote after them, with hashes of version 2 |

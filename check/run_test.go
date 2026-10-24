@@ -21,6 +21,7 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/audit"
 	"github.com/thenativeweb/eventsourcingdb-auditing/check"
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt/receipttest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
 	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
@@ -32,8 +33,9 @@ import (
 
 const testAuditorToken = "auditor-token"
 
-// instance is an EventSourcingDB with events, a custodian that has confirmed
-// every one of them half a minute after it was written, and a backup of it.
+// instance is an EventSourcingDB with events, from the image the environment
+// names, a custodian that has confirmed every one of them half a minute after
+// it was written, and a backup of it.
 type instance struct {
 	container  *eventsourcingdbtest.Container
 	client     *eventsourcingdb.Client
@@ -46,18 +48,12 @@ type instance struct {
 func newInstance(t *testing.T) instance {
 	t.Helper()
 
-	container := eventsourcingdbtest.NewContainer()
-	require.NoError(t, container.Start(t.Context()))
-	t.Cleanup(func() {
-		_ = container.Stop(context.Background())
-	})
+	container, client := databasetest.Start(t)
 
-	client, err := container.GetClient(t.Context())
-	require.NoError(t, err)
-
+	traceParent := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	for _, title := range []string{"2001", "<Ümlauts & Émojis 🎉>", "Dune"} {
 		_, err := client.WriteEvents(t.Context(), []eventsourcingdb.EventCandidate{{
-			Source: "https://example.com", Subject: "/books", Type: "io.example.book-acquired", Data: map[string]any{"title": title},
+			Source: "https://example.com", Subject: "/books", Type: "io.example.book-acquired", Data: map[string]any{"title": title}, TraceParent: &traceParent,
 		}}, nil)
 		require.NoError(t, err)
 	}

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
 	"github.com/thenativeweb/eventsourcingdb-auditing/merkle"
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify/verifytest"
@@ -32,6 +34,9 @@ type Vectors struct {
 	MerkleTree  MerkleTree      `json:"merkleTree"`
 	Anchors     []SignedAnchor  `json:"anchors"`
 	EventHashes []EventHash     `json:"eventHashes"`
+
+	EventHashesOfVersion2     []EventHash `json:"eventHashesOfVersion2"`
+	EventHashesOfBothVersions []EventHash `json:"eventHashesOfBothVersions"`
 }
 
 type Key struct {
@@ -220,19 +225,34 @@ func generate(t *testing.T) Vectors {
 		previousAnchor = signed
 	}
 
-	// The hashes of events, as EventSourcingDB computes them.
-	lines := strings.Split(strings.TrimSpace(verifytest.BackupWithFiveEvents), "\n")
-	for _, line := range lines {
+	// The hashes of events, as EventSourcingDB computes them: of version 1,
+	// of version 2, which EventSourcingDB writes from version 1.3 on, and of
+	// both versions in one backup, as in a database that was written to
+	// before and after an update to 1.3.
+	vectors.EventHashes = eventHashesOf(t, verifytest.BackupWithFiveEvents)
+	vectors.EventHashesOfVersion2 = eventHashesOf(t, databasetest.BackupWithHashesOfVersion2)
+	vectors.EventHashesOfBothVersions = eventHashesOf(t, databasetest.BackupWithHashesOfBothVersions)
+
+	return vectors
+}
+
+// eventHashesOf takes the lines of a backup, together with the hashes
+// EventSourcingDB computed for their events.
+func eventHashesOf(t *testing.T, backup string) []EventHash {
+	t.Helper()
+
+	var eventHashes []EventHash
+	for _, line := range strings.Split(strings.TrimSpace(backup), "\n") {
 		var parsed struct {
 			Payload struct {
 				Hash string `json:"hash"`
 			} `json:"payload"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(line), &parsed))
-		vectors.EventHashes = append(vectors.EventHashes, EventHash{BackupLine: line, Hash: parsed.Payload.Hash})
+		eventHashes = append(eventHashes, EventHash{BackupLine: line, Hash: parsed.Payload.Hash})
 	}
 
-	return vectors
+	return eventHashes
 }
 
 func TestVectors(t *testing.T) {
@@ -332,19 +352,33 @@ func TestVectors(t *testing.T) {
 		}
 	})
 
-	t.Run("have events that hash to their hashes", func(t *testing.T) {
-		var backup strings.Builder
-		for _, event := range vectors.EventHashes {
-			backup.WriteString(event.BackupLine + "\n")
-		}
+	t.Run("have events that hash to their hashes, in the versions they name", func(t *testing.T) {
+		for _, test := range []struct {
+			name        string
+			eventHashes []EventHash
+			versions    []string
+		}{
+			{"of version 1", vectors.EventHashes, slices.Repeat([]string{database.HashVersion1}, 5)},
+			{"of version 2", vectors.EventHashesOfVersion2, slices.Repeat([]string{database.HashVersion2}, 4)},
+			{"of both versions", vectors.EventHashesOfBothVersions, []string{database.HashVersion1, database.HashVersion1, database.HashVersion2, database.HashVersion2}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				var backup strings.Builder
+				for _, event := range test.eventHashes {
+					backup.WriteString(event.BackupLine + "\n")
+				}
 
-		i := 0
-		for event, err := range database.ReadBackup(strings.NewReader(backup.String())) {
-			require.NoError(t, err)
-			assert.True(t, event.HashMatches, "event %s", event.ID)
-			assert.Equal(t, vectors.EventHashes[i].Hash, event.Hash)
-			i++
+				i := 0
+				for event, err := range database.ReadBackup(strings.NewReader(backup.String())) {
+					require.NoError(t, err)
+					require.Less(t, i, len(test.versions))
+					assert.True(t, event.HashMatches, "event %s", event.ID)
+					assert.Equal(t, test.eventHashes[i].Hash, event.Hash)
+					assert.Equal(t, test.versions[i], event.HashVersion)
+					i++
+				}
+				assert.Equal(t, len(test.versions), i)
+			})
 		}
-		assert.Equal(t, len(vectors.EventHashes), i)
 	})
 }

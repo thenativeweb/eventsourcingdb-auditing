@@ -2,7 +2,6 @@ package database_test
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/thenativeweb/eventsourcingdb-auditing/database"
+	"github.com/thenativeweb/eventsourcingdb-auditing/database/databasetest"
 	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdb"
 	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdbtest"
 )
@@ -39,6 +39,18 @@ func readAll(t *testing.T, events func(func(database.Event, error) bool)) ([]dat
 	return read, nil
 }
 
+// changeEvent changes the line of a backup that holds the event with the
+// given index, replacing the first occurrence of old in it with new.
+func changeEvent(t *testing.T, backup string, index int, old, new string) string {
+	t.Helper()
+
+	lines := strings.SplitAfter(backup, "\n")
+	require.Contains(t, lines[index], old)
+	lines[index] = strings.Replace(lines[index], old, new, 1)
+
+	return strings.Join(lines, "")
+}
+
 func TestReadBackup(t *testing.T) {
 	t.Run("computes the same hashes as EventSourcingDB", func(t *testing.T) {
 		events, err := readAll(t, database.ReadBackup(strings.NewReader(esdbBackup)))
@@ -47,6 +59,8 @@ func TestReadBackup(t *testing.T) {
 		require.Len(t, events, 5)
 		for _, event := range events {
 			assert.True(t, event.HashMatches, "event %s", event.ID)
+			assert.Equal(t, database.HashVersion1, event.HashVersion)
+			assert.False(t, event.HashVersionIsUnknown)
 		}
 
 		assert.Equal(t, "0", events[0].ID)
@@ -72,6 +86,125 @@ func TestReadBackup(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.False(t, events[0].HashMatches, "an escape changes the bytes, so the hash must change as well")
+	})
+
+	t.Run("computes the same hashes of version 2 as EventSourcingDB 1.3", func(t *testing.T) {
+		events, err := readAll(t, database.ReadBackup(strings.NewReader(databasetest.BackupWithHashesOfVersion2)))
+
+		require.NoError(t, err)
+		require.Len(t, events, 4)
+		for _, event := range events {
+			assert.True(t, event.HashMatches, "event %s", event.ID)
+			assert.Equal(t, database.HashVersion2, event.HashVersion)
+			assert.True(t, strings.HasPrefix(event.Hash, "esdb:hash:v2:"))
+		}
+
+		assert.Equal(t, database.GenesisHash, events[0].PredecessorHash, "the genesis value has no prefix in version 2 either")
+		assert.Equal(t, events[0].Hash, events[1].PredecessorHash)
+	})
+
+	t.Run("computes every event in the version its own hash names, in a backup with both versions", func(t *testing.T) {
+		events, err := readAll(t, database.ReadBackup(strings.NewReader(databasetest.BackupWithHashesOfBothVersions)))
+
+		require.NoError(t, err)
+		require.Len(t, events, 4)
+		for i, version := range []string{database.HashVersion1, database.HashVersion1, database.HashVersion2, database.HashVersion2} {
+			assert.True(t, events[i].HashMatches, "event %s", events[i].ID)
+			assert.Equal(t, version, events[i].HashVersion, "event %s", events[i].ID)
+		}
+
+		assert.Equal(t, events[1].Hash, events[2].PredecessorHash, "the first event of version 2 names the hash of version 1 before it")
+		assert.Equal(t, events[2].Hash, events[3].PredecessorHash)
+	})
+
+	t.Run("tells an event of version 2 that has been changed in any field its hash covers", func(t *testing.T) {
+		for _, change := range []struct {
+			name     string
+			index    int
+			old, new string
+		}{
+			{"spec version", 3, `"specversion":"1.0"`, `"specversion":"1.1"`},
+			{"ID", 3, `"id":"3"`, `"id":"4"`},
+			{"predecessor hash", 3, `"predecessorhash":"esdb:hash:v2:0457`, `"predecessorhash":"esdb:hash:v2:1457`},
+			{"time", 3, `"time":"2026-10-24T09:11:14.238369299Z"`, `"time":"2026-10-24T09:11:14.2383693Z"`},
+			{"source", 3, `"source":"https://library.eventsourcingdb.io"`, `"source":"https://library.eventsourcingdb.com"`},
+			{"subject", 3, `"subject":"/books/42"`, `"subject":"/books/23"`},
+			{"type", 3, `"type":"io.eventsourcingdb.library.book-returned"`, `"type":"io.eventsourcingdb.library.book-lost"`},
+			{"data content type", 3, `"datacontenttype":"application/json"`, `"datacontenttype":"application/cloudevents+json"`},
+			{"data", 1, `"name":"阿部 🎉"`, `"name":"阿部 🎊"`},
+			{"number in the data", 2, `"copies":9007199254740993`, `"copies":9007199254740992`},
+			{"traceparent", 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"`, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203332-01"`},
+			{"tracestate", 0, `"tracestate":"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE"`, `"tracestate":"rojo=00f067aa0ba902b7"`},
+			{"removed trace context", 0, `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"rojo=00f067aa0ba902b7,congo=t61rcWkgMzE",`, ``},
+			{"added tracestate", 2, `"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",`, `"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01","tracestate":"vendor=value",`},
+			{"added traceparent", 3, `"type":"io.eventsourcingdb.library.book-returned",`, `"type":"io.eventsourcingdb.library.book-returned","traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",`},
+		} {
+			t.Run(change.name, func(t *testing.T) {
+				changed := changeEvent(t, databasetest.BackupWithHashesOfVersion2, change.index, change.old, change.new)
+
+				events, err := readAll(t, database.ReadBackup(strings.NewReader(changed)))
+
+				require.NoError(t, err)
+				require.Len(t, events, 4)
+				for i, event := range events {
+					assert.False(t, event.HashVersionIsUnknown)
+					assert.Equal(t, i != change.index, event.HashMatches, "event %d", i)
+				}
+			})
+		}
+	})
+
+	t.Run("covers the trace context with a hash of version 2, but not with one of version 1", func(t *testing.T) {
+		const traceParent, otherTraceParent = `"traceparent":"00-0af7651916cd43dd8448eb211c80319c-`, `"traceparent":"00-1af7651916cd43dd8448eb211c80319c-`
+		changed := changeEvent(t, databasetest.BackupWithHashesOfBothVersions, 0, traceParent, otherTraceParent)
+		changed = changeEvent(t, changed, 2, `"tracestate":"vendor=value"`, `"tracestate":"vendor=other"`)
+
+		events, err := readAll(t, database.ReadBackup(strings.NewReader(changed)))
+
+		require.NoError(t, err)
+		assert.True(t, events[0].HashMatches, "a hash of version 1 does not cover the traceparent")
+		assert.False(t, events[2].HashMatches, "a hash of version 2 covers the tracestate")
+	})
+
+	t.Run("takes a hash of version 2 without its prefix for one of version 1, which does not match", func(t *testing.T) {
+		changed := changeEvent(t, databasetest.BackupWithHashesOfVersion2, 3, `"hash":"esdb:hash:v2:`, `"hash":"`)
+
+		events, err := readAll(t, database.ReadBackup(strings.NewReader(changed)))
+
+		require.NoError(t, err)
+		assert.Equal(t, database.HashVersion1, events[3].HashVersion)
+		assert.False(t, events[3].HashMatches)
+		assert.False(t, events[3].HashVersionIsUnknown)
+	})
+
+	t.Run("tells a hash of a version it does not know, rather than taking it for a changed one", func(t *testing.T) {
+		for _, test := range []struct {
+			prefix, version string
+		}{
+			{"esdb:hash:v3:", "v3"},
+			{"esdb:hash:v10:", "v10"},
+			{"esdb:hash:V2:", "V2"},
+		} {
+			t.Run(test.prefix, func(t *testing.T) {
+				changed := changeEvent(t, databasetest.BackupWithHashesOfVersion2, 3, `"hash":"esdb:hash:v2:`, `"hash":"`+test.prefix)
+
+				events, err := readAll(t, database.ReadBackup(strings.NewReader(changed)))
+
+				require.NoError(t, err)
+				assert.True(t, events[3].HashVersionIsUnknown)
+				assert.Equal(t, test.version, events[3].HashVersion)
+				assert.False(t, events[3].HashMatches)
+				assert.True(t, events[2].HashMatches)
+			})
+		}
+	})
+
+	t.Run("refuses a backup in the format of the v2 API, which it does not read", func(t *testing.T) {
+		backup := `{"type":"backup","data":{"formatVersion":2,"lastBackedUpEvent":null}}` + "\n"
+
+		_, err := readAll(t, database.ReadBackup(strings.NewReader(backup)))
+
+		assert.ErrorContains(t, err, "line 1 of the backup: the backup is in the format of /api/v2/management/create-backup")
 	})
 
 	t.Run("skips empty lines and the schemas of event types", func(t *testing.T) {
@@ -106,47 +239,46 @@ func TestReadBackup(t *testing.T) {
 	})
 }
 
-// newDatabase starts a real EventSourcingDB for a single test, and writes
-// events into it whose data needs escaping in JSON.
-func newDatabase(t *testing.T) (*eventsourcingdbtest.Container, *eventsourcingdb.Client) {
+// newDatabase starts a real EventSourcingDB for a single test, from the image
+// the environment names, and writes events into it whose data needs escaping
+// in JSON, with nested objects and numbers, and with and without a trace
+// context. It returns the events as the database wrote them.
+func newDatabase(t *testing.T) (*eventsourcingdbtest.Container, *eventsourcingdb.Client, []eventsourcingdb.Event) {
 	t.Helper()
 
-	container := eventsourcingdbtest.NewContainer()
-	require.NoError(t, container.Start(t.Context()))
-	t.Cleanup(func() {
-		_ = container.Stop(context.Background())
-	})
+	container, client := databasetest.Start(t)
 
-	client, err := container.GetClient(t.Context())
-	require.NoError(t, err)
-
+	traceParent, traceState := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "vendor=value"
 	candidates := []eventsourcingdb.EventCandidate{
-		{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-acquired", Data: map[string]any{"title": "<Ümlauts & Émojis 🎉>"}},
-		{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-borrowed", Data: map[string]any{"reader": "Jürgen \"J\" O'Neil"}},
-		{Source: "https://example.com", Subject: "/readers/23", Type: "io.example.reader-registered", Data: map[string]any{"name": "阿部"}},
+		{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-acquired", Data: map[string]any{"title": "<Ümlauts & Émojis 🎉>", "author": map[string]any{"name": "阿部", "born": 1917}}, TraceParent: &traceParent, TraceState: &traceState},
+		{Source: "https://example.com", Subject: "/books/42", Type: "io.example.book-borrowed", Data: map[string]any{"reader": "Jürgen \"J\" O'Neil", "copies": 3, "ratio": 0.1, "whole": 1.0}, TraceParent: &traceParent},
+		{Source: "https://example.com", Subject: "/readers/23", Type: "io.example.reader-registered", Data: map[string]any{"name": "阿部", "tags": []any{"a", map[string]any{"b": nil}}}},
 	}
-	_, err = client.WriteEvents(t.Context(), candidates, nil)
+	written, err := client.WriteEvents(t.Context(), candidates, nil)
 	require.NoError(t, err)
 
-	return container, client
+	return container, client, written
 }
 
 func TestReadDatabase(t *testing.T) {
 	t.Run("reads all events, and computes the hashes EventSourcingDB has written", func(t *testing.T) {
-		_, client := newDatabase(t)
+		_, client, written := newDatabase(t)
 
 		events, err := readAll(t, database.ReadDatabase(t.Context(), client))
 
 		require.NoError(t, err)
-		require.Len(t, events, 3)
-		for _, event := range events {
+		require.Len(t, events, len(written))
+		for i, event := range events {
 			assert.True(t, event.HashMatches, "event %s", event.ID)
+			assert.False(t, event.HashVersionIsUnknown)
+			assert.Equal(t, written[i].Hash, event.Hash)
 		}
 		assert.Equal(t, database.GenesisHash, events[0].PredecessorHash)
+		t.Logf("EventSourcingDB %s wrote hashes of version %s", databasetest.ImageTag(), events[0].HashVersion)
 	})
 
 	t.Run("reads the same events from a backup of the database", func(t *testing.T) {
-		container, client := newDatabase(t)
+		container, client, _ := newDatabase(t)
 
 		live, err := readAll(t, database.ReadDatabase(t.Context(), client))
 		require.NoError(t, err)
@@ -174,6 +306,7 @@ func TestReadDatabase(t *testing.T) {
 			assert.True(t, backedUp[i].HashMatches, "event %s", backedUp[i].ID)
 			assert.Equal(t, live[i].ID, backedUp[i].ID)
 			assert.Equal(t, live[i].Hash, backedUp[i].Hash)
+			assert.Equal(t, live[i].HashVersion, backedUp[i].HashVersion)
 			assert.True(t, live[i].Time.Equal(backedUp[i].Time))
 		}
 	})
