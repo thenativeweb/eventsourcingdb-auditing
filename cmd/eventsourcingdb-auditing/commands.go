@@ -13,7 +13,7 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/receipt"
 	"github.com/thenativeweb/eventsourcingdb-auditing/report"
 	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
-	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdb"
 )
 
 // defaultServerURL is where the custodian of the native web is reached.

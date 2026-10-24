@@ -26,8 +26,8 @@ import (
 	"github.com/thenativeweb/eventsourcingdb-auditing/trustedlists"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify"
 	"github.com/thenativeweb/eventsourcingdb-auditing/verify/verifytest"
-	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdb"
-	"github.com/thenativeweb/eventsourcingdb-client-golang/eventsourcingdbtest"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdb"
+	"github.com/thenativeweb/eventsourcingdb-client-golang/v2/eventsourcingdbtest"
 )
 
 const testAuditorToken = "auditor-token"
