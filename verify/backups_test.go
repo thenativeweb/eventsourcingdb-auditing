@@ -74,15 +74,36 @@ func (b namedBackup) renamed(name string) namedBackup {
 	return namedBackup{name: name, content: b.content}
 }
 
+// openedFile is a file of backups in memory, which counts the bytes read
+// from it, if it is given a counter.
+type openedFile struct {
+	*strings.Reader
+	bytesRead *int
+}
+
+func (f openedFile) Read(p []byte) (int, error) {
+	n, err := f.Reader.Read(p)
+	if f.bytesRead != nil {
+		*f.bytesRead += n
+	}
+
+	return n, err
+}
+
+func (f openedFile) Close() error {
+	return nil
+}
+
+func openFile(content string) func() (io.ReadSeekCloser, error) {
+	return func() (io.ReadSeekCloser, error) {
+		return openedFile{Reader: strings.NewReader(content)}, nil
+	}
+}
+
 func sourcesOf(backups ...namedBackup) []verify.BackupSource {
 	sources := make([]verify.BackupSource, 0, len(backups))
 	for _, backup := range backups {
-		sources = append(sources, verify.BackupSource{
-			Name: backup.name,
-			Open: func() (io.ReadCloser, error) {
-				return io.NopCloser(strings.NewReader(backup.content)), nil
-			},
-		})
+		sources = append(sources, verify.BackupSource{Name: backup.name, Open: openFile(backup.content)})
 	}
 
 	return sources
@@ -175,6 +196,12 @@ func withV1Error() namedBackup {
 	lines := strings.SplitAfter(fullBackupOfV1.content, "\n")
 
 	return namedBackup{name: fullBackupOfV1.name, content: strings.Join(slices.Concat(lines[:4], []string{`{"type":"error","payload":"failed to create backup"}` + "\n"}), "")}
+}
+
+// cutV1 returns the backup of /api/v1/backup cut short in the middle of the
+// line of its last event, as a transfer that broke off leaves it.
+func cutV1() namedBackup {
+	return namedBackup{name: fullBackupOfV1.name, content: fullBackupOfV1.content[:strings.Index(fullBackupOfV1.content, `"id":"3"`)]}
 }
 
 // concatenated returns the backups one after another in one file, as cat
@@ -532,6 +559,11 @@ func TestVerifyBackups(t *testing.T) {
 				message: "Backup v1.ndjson is incomplete, since the database could not back up everything (failed to create backup), but complete backups hold every event of the chain after event 2",
 			},
 			{
+				name:    "a backup of /api/v1/backup cut short in the middle of its last line, next to a complete full one",
+				backups: []namedBackup{cutV1(), laterFullBackup},
+				message: "Backup v1.ndjson is incomplete, since it was cut short in the middle of its last line, but complete backups hold every event of the chain after event 2",
+			},
+			{
 				name:    "a full backup without its end item, next to a complete one that ends at the same event",
 				backups: []namedBackup{fullBackup.withoutLines(7, -1), fullBackupOfV1},
 				message: "Backup full.ndjson is incomplete, since it was cut short before its end item, but complete backups hold every event of the chain after event 3",
@@ -559,6 +591,15 @@ func TestVerifyBackups(t *testing.T) {
 			gap(verify.CheckBackups, "Events 5 to 6 are in none of the backups, so they could not be checked"),
 			gap(verify.CheckBackups, "Backup incremental-1.ndjson is incomplete, since it was cut short before its end item, so events after event 4 may be missing from it"),
 		)
+	})
+
+	t.Run("names a backup of /api/v1/backup cut short in the middle of its last line as a gap, and checks the events before it", func(t *testing.T) {
+		result := verifyBackups(t, confirmedChain(), cutV1())
+
+		assertFindings(t, result,
+			gap(verify.CheckBackups, "Backup v1.ndjson is incomplete, since it was cut short in the middle of its last line, so events after event 2 may be missing from it"),
+		)
+		assert.Equal(t, 3, result.EventCount)
 	})
 
 	t.Run("names a backup of /api/v1/backup with an error as a gap, and checks the events before the error", func(t *testing.T) {
@@ -683,7 +724,7 @@ func TestVerifyBackups(t *testing.T) {
 
 	t.Run("fails on a backup that can not be opened, and names it", func(t *testing.T) {
 		sources := sourcesOf(fullBackup)
-		sources[0].Open = func() (io.ReadCloser, error) {
+		sources[0].Open = func() (io.ReadSeekCloser, error) {
 			return nil, errors.New("no such file")
 		}
 
@@ -692,20 +733,51 @@ func TestVerifyBackups(t *testing.T) {
 		assert.ErrorContains(t, err, "failed to open the backup full.ndjson: no such file")
 	})
 
-	t.Run("fails on a backup that changes between the two reads", func(t *testing.T) {
-		sources := sourcesOf(fullBackup)
-		reads := 0
-		sources[0].Open = func() (io.ReadCloser, error) {
-			reads++
-			if reads == 1 {
-				return io.NopCloser(strings.NewReader(fullBackup.content)), nil
-			}
-			return io.NopCloser(strings.NewReader(fullBackup.content + "\n")), nil
+	t.Run("fails on a backup that changes between the reads", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			first   string
+			changed string
+		}{
+			{"a single one", fullBackup.content, strings.Replace(fullBackup.content, `"city":"Zürich"`, `"city":"Zurich"`, 1)},
+			{"one of several in one file", fullBackup.content + firstIncrementalBackup.content, fullBackup.content + strings.Replace(firstIncrementalBackup.content, `"title":"Ubik"`, `"title":"Valis"`, 1)},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				sources := sourcesOf(namedBackup{"chain.ndjson", test.first})
+				reads := 0
+				sources[0].Open = func() (io.ReadSeekCloser, error) {
+					reads++
+					if reads == 1 {
+						return openedFile{Reader: strings.NewReader(test.first)}, nil
+					}
+					return openedFile{Reader: strings.NewReader(test.changed)}, nil
+				}
+
+				_, err := verify.VerifyBackups(sources, confirmedChain(), afterTheLastConfirmation)
+
+				assert.ErrorContains(t, err, "the backup chain.ndjson changed while it was read")
+			})
 		}
+	})
 
-		_, err := verify.VerifyBackups(sources, confirmedChain(), afterTheLastConfirmation)
+	t.Run("reads a file with several backups once for every one of them, only as far as it goes", func(t *testing.T) {
+		chain := concatenated("chain.ndjson", fullBackup, firstIncrementalBackup, secondIncrementalBackup, backupWithoutEvents)
+		bytesRead, opens := 0, 0
+		sources := []verify.BackupSource{{
+			Name: chain.name,
+			Open: func() (io.ReadSeekCloser, error) {
+				opens++
+				return openedFile{Reader: strings.NewReader(chain.content), bytesRead: &bytesRead}, nil
+			},
+		}}
 
-		assert.ErrorContains(t, err, "the backup full.ndjson changed while it was read")
+		result, err := verify.VerifyBackups(sources, confirmedChain(), afterTheLastConfirmation)
+
+		require.NoError(t, err)
+		assert.Empty(t, result.Findings)
+		require.Len(t, result.Backups[0].Parts, 4)
+		assert.Equal(t, 5, opens, "once to learn where the backups start and end, and once for every one of them")
+		assert.Equal(t, 2*len(chain.content), bytesRead, "once to learn where the backups start and end, and once more in parts")
 	})
 
 	t.Run("fails without a backup", func(t *testing.T) {

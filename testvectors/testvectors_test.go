@@ -257,6 +257,15 @@ func generate(t *testing.T) Vectors {
 	return vectors
 }
 
+// nopCloser is a backup in memory, which needs no closing.
+type nopCloser struct {
+	io.ReadSeeker
+}
+
+func (nopCloser) Close() error {
+	return nil
+}
+
 // backupOfAChain takes the lines of a backup, together with the event it
 // follows on, and the event it ended at.
 func backupOfAChain(t *testing.T, backup string) BackupOfAChain {
@@ -441,8 +450,8 @@ func TestVectors(t *testing.T) {
 
 			sources = append(sources, verify.BackupSource{
 				Name: strconv.Itoa(i),
-				Open: func() (io.ReadCloser, error) {
-					return io.NopCloser(strings.NewReader(content)), nil
+				Open: func() (io.ReadSeekCloser, error) {
+					return nopCloser{strings.NewReader(content)}, nil
 				},
 			})
 		}

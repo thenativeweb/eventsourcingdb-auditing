@@ -248,7 +248,7 @@ func verifyEvents(ctx context.Context, options Options, custodianResult verify.C
 
 		backups = append(backups, verify.BackupSource{
 			Name: path,
-			Open: func() (io.ReadCloser, error) {
+			Open: func() (io.ReadSeekCloser, error) {
 				return os.Open(readPath)
 			},
 		})

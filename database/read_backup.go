@@ -3,9 +3,12 @@ package database
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"iter"
 	"strconv"
@@ -81,6 +84,20 @@ type Backup struct {
 	// Failure is what the error says that the database wrote into the
 	// backup, if it wrote one, which keeps the backup from being complete.
 	Failure string
+
+	// IsCutShort reports whether the backup ends in the middle of a line,
+	// as it does when it was cut short while it was transferred, which
+	// keeps it from being complete as well.
+	IsCutShort bool
+
+	// Offset and Size name the bytes of its file that belong to the backup,
+	// from where the one before it ends, or from the start of the file, to
+	// where the next one begins, or to the end of the file, and SHA256 is
+	// the SHA-256 of them, so that a backup of a file with several can be
+	// read again on its own, and be told apart from one that has changed.
+	Offset int64
+	Size   int64
+	SHA256 string
 }
 
 // EndedAt returns the event the backup ended at: its last event, or, if it
@@ -205,8 +222,9 @@ func NewBackupReader(backup io.Reader) *BackupReader {
 // does not know (ErrUnknownBackupFormat). An error the database wrote into a
 // backup, and a backup in the format of create-backup that ends without its
 // end item, only make the backup incomplete, which Backups tells, so that the
-// events it holds can still be checked. So does the rest of a line that such
-// a backup ends with, if it was cut short while it was transferred.
+// events it holds can still be checked. So does the rest of a line that a
+// backup of either format ends with, if it was cut short while it was
+// transferred.
 //
 // The events of a backup can be read only once.
 func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
@@ -214,38 +232,59 @@ func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
 		scanner := bufio.NewScanner(r.backup)
 		scanner.Buffer(make([]byte, 0, 64*1024), maxBackupLineSize)
 
+		// The line is kept as it was read, with its line feed, so that the
+		// bytes of every backup of the file are known.
+		var line []byte
 		isLineTerminated := true
 		scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
 			advance, token, err := bufio.ScanLines(data, atEOF)
 			if token != nil {
+				line = data[:advance]
 				isLineTerminated = data[advance-1] == '\n'
 			}
 
 			return advance, token, err
 		})
 
+		bytesOfBackup := newByteRange()
 		lineNumber := 0
 		for scanner.Scan() {
 			lineNumber++
 			if len(scanner.Bytes()) == 0 {
+				bytesOfBackup.add(line)
 				continue
 			}
 
+			backupsBefore := len(r.backups)
 			event, isEvent, err := r.readLine(scanner.Bytes())
 			if err != nil {
 				// EventSourcingDB ends every line with a line feed, so a
-				// backup in the format of create-backup whose last line is
-				// no JSON, and ends without one, was cut short in the middle
-				// of that line, which is left aside. The backup lacks its
-				// end item then, which makes it incomplete.
+				// backup whose last line is no JSON, and ends without one,
+				// was cut short in the middle of that line, which is left
+				// aside, and which makes the backup incomplete. After the
+				// error the database wrote into a backup of /api/v1/backup,
+				// it writes nothing more, so a line after it stays one that
+				// can not be read.
 				var syntaxError *json.SyntaxError
-				if errors.As(err, &syntaxError) && !isLineTerminated && r.formatVersion == BackupFormatVersion2 && r.state != stateBeforeBackup {
+				isWithinBackup := (r.formatVersion == BackupFormatVersion2 && r.state != stateBeforeBackup) ||
+					(r.formatVersion == BackupFormatVersion1 && r.state == stateInBackup)
+				if errors.As(err, &syntaxError) && !isLineTerminated && isWithinBackup {
+					bytesOfBackup.add(line)
+					r.current().IsCutShort = true
 					break
 				}
 
 				yield(BackedUpEvent{}, fmt.Errorf("line %d of the backup: %w", lineNumber, err))
 				return
 			}
+
+			// A backup item after the first one begins the bytes of the
+			// next backup of the file.
+			if backupsBefore > 0 && len(r.backups) > backupsBefore {
+				bytesOfBackup.end(&r.backups[backupsBefore-1])
+			}
+			bytesOfBackup.add(line)
+
 			if !isEvent {
 				continue
 			}
@@ -266,15 +305,44 @@ func (r *BackupReader) Events() iter.Seq2[BackedUpEvent, error] {
 		// A backup without a single line is taken for an empty one in the
 		// format of /api/v1/backup, as EventSourcingDB restores it. Such a
 		// backup has no end item, so it is complete unless the database
-		// wrote an error into it.
+		// wrote an error into it, or it was cut short in the middle of a
+		// line.
 		if !r.hasStarted {
 			r.backups = []Backup{{FormatVersion: BackupFormatVersion1}}
 			r.formatVersion = BackupFormatVersion1
 		}
 		if r.formatVersion == BackupFormatVersion1 {
-			r.current().IsComplete = r.current().Failure == ""
+			r.current().IsComplete = r.current().Failure == "" && !r.current().IsCutShort
 		}
+		bytesOfBackup.end(r.current())
 	}
+}
+
+// byteRange collects the bytes of a backup of a file, as they are read, and
+// computes their SHA-256.
+type byteRange struct {
+	offset int64
+	size   int64
+	hasher hash.Hash
+}
+
+func newByteRange() *byteRange {
+	return &byteRange{hasher: sha256.New()}
+}
+
+func (b *byteRange) add(line []byte) {
+	b.hasher.Write(line)
+	b.size += int64(len(line))
+}
+
+// end names the bytes collected so far as the ones of the given backup, and
+// begins collecting the ones of the next.
+func (b *byteRange) end(backup *Backup) {
+	backup.Offset, backup.Size, backup.SHA256 = b.offset, b.size, hex.EncodeToString(b.hasher.Sum(nil))
+
+	b.offset += b.size
+	b.size = 0
+	b.hasher = sha256.New()
 }
 
 // Backups returns what every backup of the file tells about itself, in the
@@ -308,15 +376,16 @@ func ReadBackup(backup io.Reader) iter.Seq2[Event, error] {
 		}
 
 		for _, read := range reader.Backups() {
-			if read.IsComplete {
+			switch {
+			case read.IsComplete:
 				continue
-			}
-			if read.Failure != "" {
+			case read.Failure != "":
 				yield(Event{}, fmt.Errorf("the backup is incomplete, since the database could not back up everything: %s", read.Failure))
-				return
+			case read.FormatVersion == BackupFormatVersion1:
+				yield(Event{}, errors.New("the backup is incomplete, since it was cut short in the middle of its last line"))
+			default:
+				yield(Event{}, errors.New("the backup is incomplete, since it lacks its end item"))
 			}
-
-			yield(Event{}, errors.New("the backup is incomplete, since it lacks its end item"))
 			return
 		}
 	}

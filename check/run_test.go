@@ -475,6 +475,25 @@ func TestRunWithBackups(t *testing.T) {
 		assert.Equal(t, report.ExitCodeNoFindings, covered.ExitCode())
 	})
 
+	t.Run("ends with the exit code for gaps for a backup of /api/v1/backup cut short in the middle of its last line, and fails on one with such a line in its middle", func(t *testing.T) {
+		cut := databasetest.FullBackupOfAPIVersion1[:strings.Index(databasetest.FullBackupOfAPIVersion1, `"id":"3"`)]
+		lines := strings.SplitAfter(databasetest.FullBackupOfAPIVersion1, "\n")
+		inTheMiddle := strings.Join(append(append(lines[:3:3], cut[strings.LastIndex(cut, "\n")+1:]+"\n"), lines[3:]...), "")
+
+		chain := newChainOfBackups(t)
+
+		built, err := chain.run(t, chain.write(t, "v1.ndjson", cut))
+
+		require.NoError(t, err)
+		require.Len(t, built.Findings, 1)
+		assert.Contains(t, built.Findings[0].Message, "v1.ndjson is incomplete, since it was cut short in the middle of its last line, so events after event 2 may be missing from it")
+		assert.Equal(t, report.ExitCodeGaps, built.ExitCode())
+
+		_, err = chain.run(t, chain.write(t, "v1-broken.ndjson", inTheMiddle))
+
+		assert.ErrorContains(t, err, "v1-broken.ndjson: line 4 of the backup")
+	})
+
 	t.Run("reads several backups one after another in one file, as cat writes them, together with separate files in any order, and names the file once with its backups", func(t *testing.T) {
 		chain := newChainOfBackups(t)
 		concatenated := chain.write(t, "chain.ndjson", databasetest.FullBackup+databasetest.FirstIncrementalBackup)

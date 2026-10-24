@@ -29,8 +29,9 @@ type BackupSource struct {
 	// Open opens the file, to read it from its start. VerifyBackups opens
 	// every file at least twice: once to learn where its backups start and
 	// end, and once for every backup it holds, to check its events together
-	// with the ones of the other backups.
-	Open func() (io.ReadCloser, error)
+	// with the ones of the other backups, for which it seeks to the bytes of
+	// that backup, and reads only them.
+	Open func() (io.ReadSeekCloser, error)
 }
 
 // CheckedBackup names a file that VerifyBackups has checked, and its
@@ -102,12 +103,12 @@ func VerifyBackups(backups []BackupSource, custodian CustodianResult, now time.T
 		return BackupsResult{}, err
 	}
 
-	// The report names the SHA-256 of what was checked, so a file must not
-	// have changed between the reads.
+	// The report names the SHA-256 of what was checked, so the bytes of a
+	// backup must not have changed between the reads.
 	result := BackupsResult{EventsResult: eventsResult}
 	isNamed := map[int]bool{}
 	for _, part := range parts {
-		if part.checkedSHA256 != part.sha256 {
+		if part.checkedSHA256 != part.backup.SHA256 {
 			return BackupsResult{}, fmt.Errorf("the backup %s changed while it was read, so it was not checked", part.source.Name)
 		}
 		if isNamed[part.fileIndex] {
@@ -145,7 +146,8 @@ func checkedBackupOf(part *backupPart, parts []*backupPart) CheckedBackup {
 
 // backupPart is a backup of a chain, as reading its file the first time has
 // found it: the number of the backup within its file, from 1 on, among the
-// backups the file holds, and the SHA-256 of the whole file.
+// backups the file holds, and the SHA-256 of the whole file, while the
+// backup names the bytes of the file that belong to it, and their SHA-256.
 type backupPart struct {
 	fileIndex   int
 	source      BackupSource
@@ -154,8 +156,8 @@ type backupPart struct {
 	backup      database.Backup
 	sha256      string
 
-	// checkedSHA256 is the SHA-256 of the file as it was read again, when
-	// the events of the backup were checked.
+	// checkedSHA256 is the SHA-256 of the bytes of the backup as they were
+	// read again, when its events were checked.
 	checkedSHA256 string
 
 	// followsOnID is the ID of the event an incremental backup follows on,
@@ -188,35 +190,60 @@ func (p *backupPart) name() string {
 	return fmt.Sprintf("%s, part %d", p.source.Name, p.number)
 }
 
-// openedBackup is a backup that is being read, with its SHA-256, which
-// covers everything read from it.
+// openedBackup is a file, or the bytes of one of its backups, that is being
+// read, with their SHA-256, which covers everything read from them.
 type openedBackup struct {
 	source BackupSource
 	file   io.ReadCloser
+	bytes  io.Reader
 	hasher hash.Hash
 	reader *database.BackupReader
 }
 
+// openBackup opens a file, to read it from its start to its end.
 func openBackup(source BackupSource) (*openedBackup, error) {
 	file, err := source.Open()
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the backup %s: %w", source.Name, err)
 	}
 
+	return newOpenedBackup(source, file, file), nil
+}
+
+// openPart opens the file of a backup again, and reads only the bytes that
+// belong to the backup, as the first read has found them, so that a file with
+// several backups is read once for every one of them, and not to its end.
+func openPart(part *backupPart) (*openedBackup, error) {
+	file, err := part.source.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open the backup %s: %w", part.source.Name, err)
+	}
+
+	_, err = file.Seek(part.backup.Offset, io.SeekStart)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("failed to read the backup %s: %w", part.name(), err)
+	}
+
+	return newOpenedBackup(part.source, file, io.LimitReader(file, part.backup.Size)), nil
+}
+
+func newOpenedBackup(source BackupSource, file io.ReadCloser, bytes io.Reader) *openedBackup {
 	hasher := sha256.New()
 
 	return &openedBackup{
 		source: source,
 		file:   file,
+		bytes:  bytes,
 		hasher: hasher,
-		reader: database.NewBackupReader(io.TeeReader(file, hasher)),
-	}, nil
+		reader: database.NewBackupReader(io.TeeReader(bytes, hasher)),
+	}
 }
 
-// digest returns the SHA-256 of the backup. Reading the events stops at the
+// digest returns the SHA-256 of what is read. Reading the events stops at the
 // end of the last line, so whatever follows it counts for the hash as well.
 func (o *openedBackup) digest() (string, error) {
-	_, err := io.Copy(o.hasher, o.file)
+	_, err := io.Copy(o.hasher, o.bytes)
 	if err != nil {
 		return "", fmt.Errorf("failed to read the backup %s: %w", o.source.Name, err)
 	}
@@ -496,8 +523,11 @@ func (f *findings) addLacking(part *backupPart, lacking idSpan) {
 // unchecked.
 func (f *findings) addIncomplete(part *backupPart, isCovered bool) {
 	reason := "it was cut short before its end item"
-	if part.backup.Failure != "" {
+	switch {
+	case part.backup.Failure != "":
 		reason = fmt.Sprintf("the database could not back up everything (%s)", part.backup.Failure)
+	case part.backup.FormatVersion == database.BackupFormatVersion1:
+		reason = "it was cut short in the middle of its last line"
 	}
 
 	endedAt := part.backup.EndedAt()
@@ -588,13 +618,13 @@ func (m *merge) events() iter.Seq2[database.Event, error] {
 		}()
 
 		for _, part := range m.parts {
-			opened, err := openBackup(part.source)
+			opened, err := openPart(part)
 			if err != nil {
 				yield(database.Event{}, err)
 				return
 			}
 
-			next, stop := iter.Pull2(eventsOfPart(opened.reader, part.number-1))
+			next, stop := iter.Pull2(opened.reader.Events())
 			head := &mergeHead{part: part, opened: opened, next: next, stop: stop}
 			heads = append(heads, head)
 
@@ -655,29 +685,6 @@ func (m *merge) events() iter.Seq2[database.Event, error] {
 				return
 			}
 			head.part.checkedSHA256 = digest
-		}
-	}
-}
-
-// eventsOfPart hands on the events of one of the backups of a file, by its
-// number within the file, from 0 on.
-func eventsOfPart(reader *database.BackupReader, part int) iter.Seq2[database.BackedUpEvent, error] {
-	return func(yield func(database.BackedUpEvent, error) bool) {
-		for event, err := range reader.Events() {
-			if err != nil {
-				yield(database.BackedUpEvent{}, err)
-				return
-			}
-			if event.Part < part {
-				continue
-			}
-			if event.Part > part {
-				return
-			}
-
-			if !yield(event, nil) {
-				return
-			}
 		}
 	}
 }

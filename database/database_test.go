@@ -2,6 +2,8 @@ package database_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -478,8 +480,27 @@ func TestBackupReader(t *testing.T) {
 		}
 	})
 
-	t.Run("fails on a line that is no JSON, unless it is the rest of a line that a backup in the format of create-backup ends with", func(t *testing.T) {
+	t.Run("takes a backup of /api/v1/backup that was cut short in the middle of its last line for incomplete, and still reads the events before it", func(t *testing.T) {
+		cut := databasetest.FullBackupOfAPIVersion1[:strings.Index(databasetest.FullBackupOfAPIVersion1, `"id":"3"`)]
+
+		events, backup, err := backedUpEventsOf(t, cut)
+
+		require.NoError(t, err)
+		assert.Len(t, events, 3)
+		assert.Equal(t, database.BackupFormatVersion1, backup.FormatVersion)
+		assert.False(t, backup.IsComplete)
+		assert.True(t, backup.IsCutShort)
+		assert.Empty(t, backup.Failure)
+		assert.Equal(t, "2", backup.EndedAt().ID)
+
+		_, err = readAll(t, database.ReadBackup(strings.NewReader(cut)))
+		assert.ErrorContains(t, err, "the backup is incomplete, since it was cut short in the middle of its last line")
+	})
+
+	t.Run("fails on a line that is no JSON, unless it is the rest of a line that a backup ends with", func(t *testing.T) {
 		cut := databasetest.SecondIncrementalBackup[:strings.Index(databasetest.SecondIncrementalBackup, `"id":"8"`)]
+		v1Cut := databasetest.FullBackupOfAPIVersion1[:strings.Index(databasetest.FullBackupOfAPIVersion1, `"id":"3"`)]
+		v1Lines := strings.SplitAfter(databasetest.FullBackupOfAPIVersion1, "\n")
 
 		for _, test := range []struct {
 			name, backup, message string
@@ -487,7 +508,9 @@ func TestBackupReader(t *testing.T) {
 			{"a line in the middle", strings.Replace(databasetest.SecondIncrementalBackup, `{"type":"event","data":{"specversion":"1.0","id":"8"`, `{"type":"event","data":{"specversion":"1.0","id":"8"}`+"\n", 1), "line 5 of the backup"},
 			{"a last line that ends with a line feed", cut + "\n", "line 5 of the backup"},
 			{"a last line after the end item", databasetest.SecondIncrementalBackup + `{"type":"event"`, "line 9 of the backup"},
-			{"a last line of a backup of /api/v1/backup", databasetest.FullBackupOfAPIVersion1[:strings.Index(databasetest.FullBackupOfAPIVersion1, `"id":"3"`)], "line 5 of the backup"},
+			{"a line in the middle of a backup of /api/v1/backup", strings.Join(slices.Concat(v1Lines[:3], []string{v1Cut[strings.LastIndex(v1Cut, "\n")+1:] + "\n"}, v1Lines[3:]), ""), "line 4 of the backup"},
+			{"a last line of a backup of /api/v1/backup that ends with a line feed", v1Cut + "\n", "line 5 of the backup"},
+			{"a last line of a backup of /api/v1/backup after its error line", strings.Join(slices.Concat(v1Lines[:4], []string{`{"type":"error","payload":"failed to create backup"}` + "\n", `{"type":"event","payload":{"event":`}), ""), "line 6 of the backup"},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				_, _, err := backedUpEventsOf(t, test.backup)
@@ -535,6 +558,31 @@ func TestBackupReader(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	t.Run("tells which bytes of a file belong to which of its backups, with their SHA-256", func(t *testing.T) {
+		heartbeat := `{"type":"heartbeat","data":{}}` + "\n"
+		parts := []string{heartbeat + databasetest.FullBackup + heartbeat, databasetest.FirstIncrementalBackup, databasetest.SecondIncrementalBackup}
+
+		_, backups, err := backedUpEventsOfFile(t, strings.Join(parts, ""))
+
+		require.NoError(t, err)
+		require.Len(t, backups, 3)
+		offset := 0
+		for i, part := range parts {
+			digest := sha256.Sum256([]byte(part))
+			assert.Equal(t, int64(offset), backups[i].Offset, "backup %d", i)
+			assert.Equal(t, int64(len(part)), backups[i].Size, "backup %d", i)
+			assert.Equal(t, hex.EncodeToString(digest[:]), backups[i].SHA256, "backup %d", i)
+			offset += len(part)
+		}
+
+		_, single, err := backedUpEventsOf(t, databasetest.FullBackupOfAPIVersion1)
+		require.NoError(t, err)
+		digest := sha256.Sum256([]byte(databasetest.FullBackupOfAPIVersion1))
+		assert.Equal(t, database.Backup{}.Offset, single.Offset)
+		assert.Equal(t, int64(len(databasetest.FullBackupOfAPIVersion1)), single.Size)
+		assert.Equal(t, hex.EncodeToString(digest[:]), single.SHA256)
 	})
 
 	t.Run("reads several backups in one file in any order, and tells which of them is incomplete", func(t *testing.T) {
